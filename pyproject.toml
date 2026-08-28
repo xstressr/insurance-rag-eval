@@ -1,0 +1,11 @@
+[project]
+name = "insurance-rag-eval"
+version = "0.1.0"
+description = "中文保险条款检索学习工程：最小环境骨架"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = []
+
+[tool.uv]
+# 目前只管理环境；包结构和核心模块由学习者逐步设计。
+package = false
