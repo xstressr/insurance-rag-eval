@@ -17,18 +17,26 @@ import json
 from collections import defaultdict
 from pathlib import Path
 
+import numpy as np
+
 from bm25 import BM25, RESOURCES, configure, tokenize
 
 ROOT = Path(__file__).resolve().parent.parent
 CHUNKS = ROOT / "data" / "processed" / "chunks.jsonl"
 GOLDEN = ROOT / "dataset" / "golden_v1.jsonl"
 REPORTS = ROOT / "reports"
+EMB_DIR = ROOT / "data" / "processed" / "emb"
 
 SHORT = {
     "cpic_archimedes_2025": "太保",
     "taikang_huijiabao_2026": "泰康",
     "chinalife_kangning_zunxiang_2024": "国寿",
     "iac_ci_definitions_2020": "行业规范",
+}
+RETRIEVER_NAME = {
+    "bm25": "手写 BM25（已用 rank_bm25 对照验证）",
+    "dense": "向量检索（余弦相似度）",
+    "hybrid": "混合检索：BM25 + 向量，RRF 融合",
 }
 TYPE_NAME = {"exact": "精确查找", "number": "数字", "condition": "条件判断", "compare": "对比", "refuse": "拒答"}
 
@@ -65,13 +73,53 @@ def label(chunk: dict) -> str:
     return f"{SHORT[chunk['doc_id']]} p{chunk['page_start']} {where}"
 
 
-def evaluate(chunks: list[dict], golden: list[dict], index: BM25, k: int, product_filter: bool = False) -> list[dict]:
+class Retriever:
+    """三种检索方式：bm25、dense（向量余弦）、hybrid（两路名次用 RRF 融合）。
+
+    RRF：score = Σ 1 / (rrf_k + 名次)。只看名次、不看原始分数，
+    所以 BM25 分数（几到几十）和余弦（0 到 1）量纲不同也能直接合并。
+    """
+
+    def __init__(self, kind: str, index: BM25, chunk_vecs=None, question_vecs=None, rrf_k: int = 60):
+        self.kind, self.index, self.rrf_k = kind, index, rrf_k
+        self.chunk_vecs, self.question_vecs = chunk_vecs, question_vecs
+
+    def rank(self, qi: int, qtok: list[str]) -> tuple[list[int], dict[int, dict]]:
+        """返回全部文本块的排序，以及每块的得分信息（用于报告里的解释）。"""
+        n = self.index.n_docs
+        bm = self.index.scores(qtok)
+        bm_order = sorted(range(n), key=lambda i: (-bm[i], i))
+        info = {i: {"bm25": round(bm[i], 2)} for i in range(n)}
+        if self.kind == "bm25":
+            for i in range(n):
+                info[i]["score"] = bm[i]
+            return bm_order, info
+
+        cos = self.chunk_vecs @ self.question_vecs[qi]
+        dense_order = sorted(range(n), key=lambda i: (-cos[i], i))
+        bm_rank = {d: r for r, d in enumerate(bm_order, start=1)}
+        dense_rank = {d: r for r, d in enumerate(dense_order, start=1)}
+        for i in range(n):
+            info[i].update(cos=round(float(cos[i]), 3), bm25_rank=bm_rank[i], dense_rank=dense_rank[i])
+        if self.kind == "dense":
+            for i in range(n):
+                info[i]["score"] = float(cos[i])
+            return dense_order, info
+
+        fused = [1 / (self.rrf_k + bm_rank[i]) + 1 / (self.rrf_k + dense_rank[i]) for i in range(n)]
+        for i in range(n):
+            info[i]["score"] = fused[i]
+        return sorted(range(n), key=lambda i: (-fused[i], i)), info
+
+
+def evaluate(chunks: list[dict], golden: list[dict], retriever: Retriever, k: int, product_filter: bool = False) -> list[dict]:
+    index = retriever.index
     results = []
-    for q in golden:
+    for qi, q in enumerate(golden):
         qtok = tokenize(q["question"])
-        order = index.rank(qtok)
+        order, info = retriever.rank(qi, qtok)
         products = detect_products(q["question"]) if product_filter else set()
-        if products:  # 先排序再过滤：BM25 各块得分互相独立，等价于只在这些产品里检索
+        if products:  # 先排序再过滤：各块得分互相独立，保持相对顺序，等价于只在这些产品里检索
             order = [i for i in order if chunks[i]["doc_id"] in products]
         pos = {doc: r for r, doc in enumerate(order, start=1)}
 
@@ -102,11 +150,15 @@ def evaluate(chunks: list[dict], golden: list[dict], index: BM25, k: int, produc
                         "label": label(chunks[i]),
                         "section": chunks[i]["section"],
                         "relevant": any(is_relevant(chunks[i], s) for s in q["expected_sources"]),
-                        "explain": {t: round(v, 2) for t, v in index.explain(qtok, i).items()},
+                        "explain": (
+                            {t: round(v, 2) for t, v in index.explain(qtok, i).items()}
+                            if retriever.kind == "bm25"
+                            else {x: v for x, v in info[i].items() if x != "score"}
+                        ),
                     }
                     for i in top
                 ],
-                "top1_score": round(sum(index.explain(qtok, top[0]).values()), 3),
+                "top1_score": round(info[top[0]]["score"], 4),
             }
         )
     return results
@@ -138,7 +190,7 @@ def write_report(results: list[dict], args: argparse.Namespace, n_chunks: int) -
         "",
         "| 项 | 值 |",
         "|---|---|",
-        "| 检索器 | 手写 BM25（已用 rank_bm25 对照验证） |",
+        f"| 检索器 | {RETRIEVER_NAME[args.retriever]}{'（向量：' + args.emb + '）' if args.retriever != 'bm25' else ''} |",
         f"| k1 / b / IDF | {args.k1} / {args.b} / {args.idf} |",
         f"| 分词 | jieba {'搜索引擎' if args.tokenizer == 'search' else '精确'}模式 + 词典 `{args.terms}` + 停用词 |",
         f"| 索引字段 | `{args.field}` |",
@@ -235,6 +287,9 @@ def main() -> None:
     ap.add_argument("--idf", default="lucene", choices=["lucene", "okapi"])
     ap.add_argument("--field", default="index_text", choices=["index_text", "text"])
     ap.add_argument("--product-filter", action="store_true")
+    ap.add_argument("--retriever", default="bm25", choices=["bm25", "dense", "hybrid"])
+    ap.add_argument("--emb", default="bge-m3_index_text", help="data/processed/emb 下的向量目录")
+    ap.add_argument("--rrf-k", type=int, default=60)
     ap.add_argument("--tokenizer", default="precise", choices=["precise", "search"])
     ap.add_argument("--terms", default="insurance_terms.txt", help="src/resources 下的词典文件名")
     args = ap.parse_args()
@@ -243,7 +298,16 @@ def main() -> None:
     chunks = load_jsonl(CHUNKS)
     golden = load_jsonl(GOLDEN)
     index = BM25([tokenize(c[args.field]) for c in chunks], k1=args.k1, b=args.b, idf_variant=args.idf)
-    results = evaluate(chunks, golden, index, args.k, product_filter=args.product_filter)
+    chunk_vecs = question_vecs = None
+    if args.retriever != "bm25":
+        emb = EMB_DIR / args.emb
+        meta = json.loads((emb / "meta.json").read_text(encoding="utf-8"))
+        # 向量和文本块、题目必须一一对应；切分或题目变了就要重跑 embed.py
+        if meta["chunk_ids"] != [c["chunk_id"] for c in chunks] or meta["question_ids"] != [q["id"] for q in golden]:
+            raise SystemExit(f"{emb} 与当前 chunks / golden 不一致，请重新运行 src/embed.py")
+        chunk_vecs, question_vecs = np.load(emb / "chunks.npy"), np.load(emb / "questions.npy")
+    retriever = Retriever(args.retriever, index, chunk_vecs, question_vecs, rrf_k=args.rrf_k)
+    results = evaluate(chunks, golden, retriever, args.k, product_filter=args.product_filter)
 
     (REPORTS / "runs").mkdir(parents=True, exist_ok=True)
     with (REPORTS / "runs" / f"{args.run_name}.jsonl").open("w", encoding="utf-8") as f:

@@ -26,6 +26,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "jieba" },
+    { name = "numpy" },
     { name = "pymupdf" },
 ]
 
@@ -38,6 +39,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "jieba", specifier = ">=0.42.1" },
+    { name = "numpy", specifier = ">=2.5.3" },
     { name = "pymupdf", specifier = ">=1.28.2" },
 ]
 
