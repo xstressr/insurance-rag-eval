@@ -141,13 +141,18 @@ def parse_json(text: str) -> dict | None:
 
 
 class LLM:
-    def __init__(self, max_tokens: int) -> None:
+    def __init__(
+        self, max_tokens: int | None, model: str | None = None, prefix: str = "LLM", extra_body: dict | None = None
+    ) -> None:
+        """prefix 决定读哪组环境变量：LLM_*（生成，默认 OpenCode Go）或 JUDGE_*（评委，可换服务商）。"""
         load_dotenv(ROOT / ".env")
-        self.model = os.environ["LLM_MODEL"]
+        self.prefix = prefix
+        self.extra_body = extra_body or {}  # 服务商特有参数，例如 GLM 的 thinking / reasoning_effort
+        self.model = model or os.environ[f"{prefix}_MODEL"]
         self.max_tokens = max_tokens
         self.client = OpenAI(
-            base_url=os.environ["LLM_BASE_URL"],
-            api_key=os.environ["LLM_API_KEY"],
+            base_url=os.environ[f"{prefix}_BASE_URL"],
+            api_key=os.environ[f"{prefix}_API_KEY"],
             default_headers={"User-Agent": USER_AGENT},
             timeout=180,
             max_retries=2,
@@ -155,7 +160,11 @@ class LLM:
 
     def chat(self, system: str, user: str, session: str) -> dict:
         """返回 {content, usage, model, seconds, cached}。缓存键 = 模型 + 提示词全文。"""
-        key = hashlib.sha256(json.dumps([self.model, system, user], ensure_ascii=False).encode()).hexdigest()[:24]
+        # 默认服务商沿用旧的缓存键（保证旧结果可复现）；其他服务商加上前缀，避免同名模型串用缓存
+        parts = [self.model, system, user] if self.prefix == "LLM" else [self.prefix, self.model, system, user]
+        if self.extra_body:
+            parts.append(self.extra_body)
+        key = hashlib.sha256(json.dumps(parts, ensure_ascii=False).encode()).hexdigest()[:24]
         path = CACHE / f"{key}.json"
         if path.exists():
             return {**json.loads(path.read_text(encoding="utf-8")), "cached": True}
@@ -164,9 +173,11 @@ class LLM:
             model=self.model,
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
             temperature=0,
-            max_tokens=self.max_tokens,
+            # None = 不传，用模型自己的最大输出上限（推理模型的思考也占这个额度）
+            **({"max_tokens": self.max_tokens} if self.max_tokens else {}),
             # OpenCode Go 要求：每个对话一个稳定的会话 ID，用于路由和提示词缓存
             extra_headers={"x-opencode-session": session},
+            extra_body=self.extra_body or None,
         )
         u = resp.usage
         details = getattr(u, "completion_tokens_details", None)
@@ -181,8 +192,10 @@ class LLM:
             },
             "seconds": round(time.time() - t0, 1),
         }
-        CACHE.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
+        # 被截断的响应不缓存，否则重跑会一直读到这个坏结果
+        if out["finish_reason"] != "length":
+            CACHE.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
         return {**out, "cached": False}
 
 
@@ -270,7 +283,7 @@ def write_report(rows: list[dict], s: dict, args: argparse.Namespace, llm: LLM, 
         "",
         "| 项 | 值 |",
         "|---|---|",
-        f"| 模型 | `{llm.model}`（OpenCode Go，temperature=0，max_tokens={args.max_tokens}） |",
+        f"| 模型 | `{llm.model}`（OpenCode Go，temperature=0，max_tokens={args.max_tokens or '模型上限'}） |",
         f"| 提示词 | `{args.prompt}`（`src/answer.py` 的 PROMPTS） |",
         f"| 检索 | 向量检索 bge-m3（`{args.emb}`）+ 产品过滤，文本块 {n_chunks} 个 |",
         f"| 上下文 | 前 {args.k} 个种子块，{'同条款前后各扩展 ' + str(args.expand) + ' 块，' if args.expand else ''}去重，字数预算 {args.char_budget} |",
@@ -315,7 +328,7 @@ def main() -> None:
     ap.add_argument("--char-budget", type=int, default=8000)
     ap.add_argument("--expand", type=int, default=1, help="small-to-big：同条款前后各带几块，0 = gen_v1 的做法")
     ap.add_argument("--prompt", default="p2", choices=sorted(PROMPTS))
-    ap.add_argument("--max-tokens", type=int, default=4096)  # 推理模型的思考也占这个额度
+    ap.add_argument("--max-tokens", type=int, default=None, help="不设则用模型自己的最大输出上限")
     ap.add_argument("--workers", type=int, default=3)
     ap.add_argument("--limit", type=int, default=None, help="只跑前 N 题，用于冒烟测试")
     args = ap.parse_args()
