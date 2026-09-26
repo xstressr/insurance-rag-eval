@@ -101,7 +101,7 @@ TOOLS = [
 ]
 TOOL_NAMES = {t["function"]["name"] for t in TOOLS}
 
-AGENT_VERSION = "a1"
+AGENT_VERSION = "a1"  # 循环版本；提示词版本见 AGENT_PROMPTS
 # 回答规则沿用 p2 的 1～8 条，只把输出格式换成工具调用
 _P2_RULES = PROMPTS["p2"].split("规则：", 1)[1].split("只输出一个 JSON", 1)[0].strip()
 SYSTEM_PROMPT = f"""你是保险条款问答助手，可以使用工具检索条款。只能依据工具返回的条款内容回答，不能使用常识或记忆。
@@ -118,6 +118,19 @@ SYSTEM_PROMPT = f"""你是保险条款问答助手，可以使用工具检索条
 回答规则（写进 final_answer）：
 {_P2_RULES}
 引用编号是工具结果里的 [Cn]。"""
+
+# 提示词只增不改，旧版本保留以便复现。
+# a2：agent_v1 的答案变长后开始夹带片段外的补充（3 题不忠实），且常不经 final_answer 直接输出文字。
+AGENT_PROMPTS = {
+    "a1": SYSTEM_PROMPT,
+    "a2": SYSTEM_PROMPT
+    + """
+
+补充要求（优先于上面的规则）：
+9. final_answer 中的每一句都必须带 [Cn] 引用。不要写片段原文没有的提醒、建议、推测或概括（例如“以保险单为准”“建议咨询保险公司”“一般来说”“其他产品也类似”），除非片段里写了。
+10. 只回答问题问到的内容，不要罗列与问题无关的条款细节。
+11. 必须调用 final_answer 提交答案，不要直接输出文字。""",
+}
 
 
 class Corpus:
@@ -227,63 +240,88 @@ def validate(name: str, raw_args: str) -> tuple[dict | None, str | None]:
     return args, None
 
 
+FORCE_ANSWER = "工具调用次数已用完。请只根据已有检索结果，按回答规则直接给出答案，输出 JSON：{\"answerable\": true或false, \"answer\": \"...\"}"
+ANSWER_ONLY = [t for t in TOOLS if t["function"]["name"] == "final_answer"]
+
+
+def system_prompt(version: str, max_steps: int) -> str:
+    return AGENT_PROMPTS[version].replace("{max_steps}", str(max_steps))
+
+
+def execute_calls(ep: Episode, calls: list[dict], step: int, trajectory: list[dict]) -> tuple[list[dict], dict | None]:
+    """执行一轮里的全部工具调用：校验 → 去重 → 执行。返回 (工具结果消息, 最终答案或 None)。"""
+    tool_msgs, final = [], None
+    for call in calls:
+        name, raw = call["function"]["name"], call["function"]["arguments"]
+        targs, err = validate(name, raw)
+        sig = f"{name}:{json.dumps(targs, ensure_ascii=False, sort_keys=True)}" if targs else None
+        if err:
+            result = err
+        elif name == "final_answer":
+            final = {"answer": targs["answer"], "answerable": targs["answerable"]}
+            result = "已提交。"
+        elif sig in ep.seen_calls:  # 幂等：同样的调用不重复执行，指向之前的结果
+            result = f"重复调用：与之前的调用完全相同，结果见 {ep.seen_calls[sig]}。请换一个查询或直接作答。"
+        else:
+            first_cid = f"C{len(ep.blocks) + 1}"
+            result = ep.search(**targs) if name == "search" else ep.read_clause(**targs)
+            if not result.startswith("错误"):
+                ep.seen_calls[sig] = f"{first_cid} 起的结果"
+        trajectory.append({"step": step, "tool": name, "args": targs if targs else raw, "error": err, "result_head": result[:120]})
+        tool_msgs.append({"role": "tool", "tool_call_id": call["id"], "content": result})
+    return tool_msgs, final
+
+
+def text_answer(msg: dict) -> dict:
+    """模型没调用工具、直接输出文字时，当作最终答案解析。"""
+    parsed = parse_json(msg["content"])
+    return {"answer": parsed["answer"] if parsed else msg["content"], "answerable": parsed.get("answerable") if parsed else None}
+
+
 def run_episode(q: dict, corpus: Corpus, llm: LLM, args: argparse.Namespace) -> dict:
     ep = Episode(corpus)
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT.replace("{max_steps}", str(args.max_steps))},
+        {"role": "system", "content": system_prompt(args.agent_prompt, args.max_steps)},
         {"role": "user", "content": q["question"]},
     ]
     session = str(uuid.uuid5(uuid.NAMESPACE_URL, f"insurance-rag-eval/{args.run_name}/{q['id']}"))
     trajectory, usage = [], {"prompt": 0, "completion": 0, "reasoning": 0}
-    answer, answerable, stop, cached_all = None, None, "max_steps", True
+    final, stop, cached_all = None, "max_steps", True
 
     for step in range(1, args.max_steps + 2):
         final_round = step > args.max_steps
-        if final_round:  # 步数用完：撤掉工具，只能作答
-            messages.append({"role": "user", "content": "工具调用次数已用完。请只根据已有检索结果，按回答规则直接给出答案，输出 JSON：{\"answerable\": true或false, \"answer\": \"...\"}"})
-            resp = llm.chat_tools(messages, [t for t in TOOLS if t["function"]["name"] == "final_answer"], session)
-        else:
-            resp = llm.chat_tools(messages, TOOLS, session)
+        if final_round:  # 步数用完：只留 final_answer 一个工具
+            messages.append({"role": "user", "content": FORCE_ANSWER})
+        resp = llm.chat_tools(messages, ANSWER_ONLY if final_round else TOOLS, session)
         cached_all &= resp["cached"]
         for k in usage:
             usage[k] += resp["usage"][k]
         msg = resp["message"]
         messages.append(msg)
         calls = msg.get("tool_calls") or []
-        if not calls:  # 模型没调用工具，直接输出了文字：当作最终答案
-            parsed = parse_json(msg["content"])
-            answer = parsed["answer"] if parsed else msg["content"]
-            answerable = parsed.get("answerable") if parsed else None
-            stop = "text_answer"
+        if not calls:
+            final, stop = text_answer(msg), "text_answer"
             trajectory.append({"step": step, "tool": None, "note": "模型直接输出文字"})
             break
-        done = False
-        for call in calls:
-            name, raw = call["function"]["name"], call["function"]["arguments"]
-            targs, err = validate(name, raw)
-            sig = f"{name}:{json.dumps(targs, ensure_ascii=False, sort_keys=True)}" if targs else None
-            if err:
-                result = err
-            elif name == "final_answer":
-                answer, answerable, done = targs["answer"], targs["answerable"], True
-                result = "已提交。"
-            elif sig in ep.seen_calls:  # 幂等：同样的调用不重复执行，指向之前的结果
-                result = f"重复调用：与之前的调用完全相同，结果见 {ep.seen_calls[sig]}。请换一个查询或直接作答。"
-            else:
-                first_cid = f"C{len(ep.blocks) + 1}"
-                result = ep.search(**targs) if name == "search" else ep.read_clause(**targs)
-                if not result.startswith("错误"):
-                    ep.seen_calls[sig] = f"{first_cid} 起的结果"
-            trajectory.append(
-                {"step": step, "tool": name, "args": targs if targs else raw, "error": err, "result_head": result[:120]}
-            )
-            messages.append({"role": "tool", "tool_call_id": call["id"], "content": result})
-        if done:
+        tool_msgs, final = execute_calls(ep, calls, step, trajectory)
+        messages.extend(tool_msgs)
+        if final:
             stop = "final_answer" if not final_round else "forced_answer"
             break
+    return finalize(q, ep, final, stop, trajectory, usage, cached_all)
 
-    answer = answer or ""
-    chunks = corpus.chunks
+
+def uncited_sentences(answer: str) -> list[str]:
+    """按句号、分号和换行切句，返回没有 [Cn] 引用的实质句子（忽略短于 8 字的标题或连接语）。"""
+    parts = re.split(r"(?<=[。；！？])|\n", answer)
+    return [p.strip() for p in parts if len(re.sub(r"[\s*#\-：:0-9.、（）()]", "", p)) >= 8 and not re.search(r"\[C\d+\]", p)]
+
+
+def finalize(q: dict, ep: Episode, final: dict | None, stop: str, trajectory: list[dict], usage: dict, cached_all: bool) -> dict:
+    """把一次执行整理成与 answer.py 一致的结果行，judge.py 可以直接评分。"""
+    answer = (final or {}).get("answer") or ""
+    answerable = (final or {}).get("answerable")
+    chunks = ep.corpus.chunks
     by_id = {c["chunk_id"]: i for i, c in enumerate(chunks)}
     cids = {b["cid"]: b for b in ep.blocks}
     cited = list(dict.fromkeys(re.findall(r"\[(C\d+)\]", answer)))
@@ -318,6 +356,8 @@ def run_episode(q: dict, corpus: Corpus, llm: LLM, args: argparse.Namespace) -> 
         "n_tool_errors": sum(bool(t.get("error")) for t in tool_calls),
         "n_duplicate_calls": sum(str(t.get("result_head", "")).startswith("重复调用") for t in tool_calls),
         "tools_used": [t["tool"] for t in tool_calls],
+        "answer_chars": len(answer),
+        "uncited_sentences": uncited_sentences(answer),
         "trajectory": trajectory,
     }
 
@@ -328,7 +368,7 @@ def write_report(rows: list[dict], s: dict, args: argparse.Namespace, llm: LLM) 
     lines = [
         f"# Agent 报告 · {args.run_name}",
         "",
-        f"> 自动生成（{date.today()}）。评测集 `dataset/{args.golden}`。手写循环 `{AGENT_VERSION}`（`src/agent.py`），模型 `{llm.model}`，最多 {args.max_steps} 轮工具调用。",
+        f"> 自动生成（{date.today()}）。评测集 `dataset/{args.golden}`。{getattr(args, 'engine', '手写循环')} `{AGENT_VERSION}`，提示词 `{args.agent_prompt}`，模型 `{llm.model}`，最多 {args.max_steps} 轮工具调用。",
         "",
         "## 指标",
         "",
@@ -342,6 +382,8 @@ def write_report(rows: list[dict], s: dict, args: argparse.Namespace, llm: LLM) 
         f"| 结束方式 | {', '.join(f'{k} {v}' for k, v in sorted(__import__('collections').Counter(r['stop'] for r in rows).items()))} |",
         f"| 用过 read_clause 的题 | {sum('read_clause' in r['tools_used'] for r in rows)} |",
         f"| 平均看过的字数 | {s['avg_context_chars']:.0f} |",
+        f"| 平均答案字数 | {sum(r['answer_chars'] for r in rows) / n:.0f} |",
+        f"| 没带引用的句子 | {sum(len(r['uncited_sentences']) for r in rows)}（涉及 {sum(bool(r['uncited_sentences']) for r in rows)} 题） |",
         f"| token（输入 / 输出 / 其中思考） | {s['tokens_prompt']} / {s['tokens_completion']} / {s['tokens_reasoning']} |",
         "",
         "## 逐题轨迹",
@@ -369,6 +411,7 @@ def main() -> None:
     ap.add_argument("--run-name", required=True)
     ap.add_argument("--golden", default=GOLDEN.name)
     ap.add_argument("--max-steps", type=int, default=6)
+    ap.add_argument("--agent-prompt", default="a2", help="AGENT_PROMPTS 中的版本")
     ap.add_argument("--workers", type=int, default=3)
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--only", default=None, help="逗号分隔的题号，只跑这些题")
