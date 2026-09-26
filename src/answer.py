@@ -1,8 +1,9 @@
 """检索 → 组装上下文 → 大模型生成带引用的答案 → 程序检查引用与拒答。
 
 用法：
-    uv run python src/answer.py --run-name gen_v1
-    uv run python src/answer.py --run-name gen_v1_blind --golden golden_blind_v1.jsonl --emb bge-m3_index_text_blind
+    uv run python src/answer.py --run-name gen_v3_p2 --golden golden_v2.jsonl   # 默认：expand=1、预算 8000、提示词 p2
+    uv run python src/answer.py --run-name gen_v1 --expand 0 --char-budget 4000 --prompt p1   # 复现 gen_v1
+    uv run python src/answer.py --run-name gen_v3_p2_blind --golden golden_blind_v1.jsonl --emb bge-m3_index_text_blind
 
 模型配置读项目根目录的 .env（LLM_BASE_URL / LLM_API_KEY / LLM_MODEL），key 不打印、不落盘。
 同一个模型 + 同一份提示词的响应缓存在 data/processed/llm_cache/，重跑评测不重复花钱。
@@ -42,9 +43,12 @@ PRODUCT_NAME = {
     "iac_ci_definitions_2020": "重大疾病保险的疾病定义使用规范（2020年修订版）",
 }
 
-# 改动提示词要同步改版本号：报告和缓存都靠它区分结果来自哪一版提示词。
-PROMPT_VERSION = "p1"
-SYSTEM_PROMPT = f"""你是保险条款问答助手。只能依据用户给出的【条款片段】回答，不能使用片段以外的常识或记忆。
+# 提示词只增不改：新版本另起一个键，旧版本保留，报告和缓存都能区分结果来自哪一版。
+_OUTPUT = """只输出一个 JSON 对象，不要输出其他内容：
+{"answerable": true 或 false, "answer": "带 [Cn] 引用的回答"}"""
+
+PROMPTS = {
+    "p1": f"""你是保险条款问答助手。只能依据用户给出的【条款片段】回答，不能使用片段以外的常识或记忆。
 
 规则：
 1. 每一句陈述事实的话，句末用方括号标注依据的片段编号，例如 [C1] 或 [C1][C3]。
@@ -53,8 +57,23 @@ SYSTEM_PROMPT = f"""你是保险条款问答助手。只能依据用户给出的
 4. 对比题要分别说明每个产品，再给出比较结论。
 5. 回答简洁，使用条款原文中的数字和术语，不要改写数字。
 
-只输出一个 JSON 对象，不要输出其他内容：
-{{"answerable": true 或 false, "answer": "带 [Cn] 引用的回答"}}"""
+{_OUTPUT}""",
+    # p2 在 p1 基础上加 6～8 三条通用原则，针对 gen_v1 / ctx 实验中的三类生成失败：
+    # 拘泥字面（用户用词和条款术语不同就拒答）、不敢从条款范围推断、把举例当成一般规则。
+    "p2": f"""你是保险条款问答助手。只能依据用户给出的【条款片段】回答，不能使用片段以外的常识或记忆。
+
+规则：
+1. 每一句陈述事实的话，句末用方括号标注依据的片段编号，例如 [C1] 或 [C1][C3]。
+2. 片段不足以回答时，answer 以“{REFUSAL}”开头，再用一句话说明缺少什么信息；answerable 设为 false。
+3. 片段只能回答一部分时，回答能回答的部分并注明，另一部分说明条款未提及；answerable 设为 true。
+4. 对比题要分别说明每个产品，再给出比较结论；某个产品在片段中没有相关内容时，明确指出。
+5. 回答简洁，使用条款原文中的数字和术语，不要改写数字。
+6. 按含义而不是字面匹配：用户的说法常与条款术语不同（口语、俗称、行业通称）。只要片段里的约定在含义上回答了问题，就据此回答，并说明条款中的原文说法；不要因为片段没有出现用户用的那个词就拒答。
+7. 可以依据条款的适用范围作推断：条款明确规定某项权益或责任只适用于特定情形时，可以据此说明其他情形不适用，并注明“条款仅约定了……”作为依据。不要推断片段没有涉及的事实。
+8. 区分规则与举例：片段中的举例、示例、演示数据只用于说明，不代表一般规则或具体费率。问题问的是一般性规则或数额、而片段只有举例时，说明条款未提供，可提及举例但必须注明仅为示例。
+
+{_OUTPUT}""",
+}
 
 
 def build_context(chunks: list[dict], order: list[int], k: int, char_budget: int, expand: int = 0) -> list[dict]:
@@ -175,7 +194,7 @@ def run_one(q: dict, qi: int, chunks: list[dict], retriever: Retriever, llm: LLM
     ctx = build_context(chunks, order, args.k, args.char_budget, args.expand)
     user = f"【条款片段】\n{render_context(chunks, ctx)}\n\n【问题】\n{q['question']}"
     session = str(uuid.uuid5(uuid.NAMESPACE_URL, f"insurance-rag-eval/{args.run_name}/{q['id']}"))
-    resp = llm.chat(SYSTEM_PROMPT, user, session)
+    resp = llm.chat(PROMPTS[args.prompt], user, session)
 
     parsed = parse_json(resp["content"])
     answer = parsed["answer"] if parsed else resp["content"]
@@ -252,7 +271,7 @@ def write_report(rows: list[dict], s: dict, args: argparse.Namespace, llm: LLM, 
         "| 项 | 值 |",
         "|---|---|",
         f"| 模型 | `{llm.model}`（OpenCode Go，temperature=0，max_tokens={args.max_tokens}） |",
-        f"| 提示词 | `{PROMPT_VERSION}`（`src/answer.py` 的 SYSTEM_PROMPT） |",
+        f"| 提示词 | `{args.prompt}`（`src/answer.py` 的 PROMPTS） |",
         f"| 检索 | 向量检索 bge-m3（`{args.emb}`）+ 产品过滤，文本块 {n_chunks} 个 |",
         f"| 上下文 | 前 {args.k} 个种子块，{'同条款前后各扩展 ' + str(args.expand) + ' 块，' if args.expand else ''}去重，字数预算 {args.char_budget} |",
         "",
@@ -293,8 +312,9 @@ def main() -> None:
     ap.add_argument("--golden", default=GOLDEN.name)
     ap.add_argument("--emb", default="bge-m3_index_text")
     ap.add_argument("--k", type=int, default=5)
-    ap.add_argument("--char-budget", type=int, default=4000)
-    ap.add_argument("--expand", type=int, default=0, help="small-to-big：同条款前后各带几块")
+    ap.add_argument("--char-budget", type=int, default=8000)
+    ap.add_argument("--expand", type=int, default=1, help="small-to-big：同条款前后各带几块，0 = gen_v1 的做法")
+    ap.add_argument("--prompt", default="p2", choices=sorted(PROMPTS))
     ap.add_argument("--max-tokens", type=int, default=4096)  # 推理模型的思考也占这个额度
     ap.add_argument("--workers", type=int, default=3)
     ap.add_argument("--limit", type=int, default=None, help="只跑前 N 题，用于冒烟测试")
