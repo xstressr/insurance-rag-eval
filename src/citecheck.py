@@ -47,6 +47,9 @@ def cn2num(s: str) -> int | None:
 
 
 ROMAN = str.maketrans({"Ⅰ": "1", "Ⅱ": "2", "Ⅲ": "3", "Ⅳ": "4", "Ⅴ": "5"})
+# 日期不是数字事实：“2026年5月10日”里的“10日”会被误当成天数。抽取前先整体去掉。
+DATE_RE = re.compile(r"\d{4}-\d{1,2}-\d{1,2}|(?:\d{4}\s*年\s*)?\d{1,2}\s*月\s*\d{1,2}\s*日|\d{4}\s*年(?!\s*内|\s*以)")
+BARE_NUM = re.compile(r"\d+(?:\.\d+)?")
 
 
 def facts(text: str) -> set[tuple[str, str]]:
@@ -55,7 +58,7 @@ def facts(text: str) -> set[tuple[str, str]]:
     不算事实的：“一次”（量词）；小于 10 的“种”（多是模型自己数的）；1900 年以后的年份（多是文件名里的年份）。
     """
     out = set()
-    for num, unit in FACT_RE.findall(text.translate(ROMAN)):
+    for num, unit in FACT_RE.findall(DATE_RE.sub(" ", text.translate(ROMAN))):
         if not num[0].isdigit():
             n = cn2num(num)
             if n is None:
@@ -98,6 +101,9 @@ def check(answer: str, blocks: dict[str, tuple[str, set[str]]], question: str = 
     问题本身出现的数字（如“30岁买……”）视为复述，不检查。"""
     block_text = {c: t for c, (t, _) in blocks.items()}
     block_facts = {c: facts(t) for c, t in block_text.items()}
+    # 计算工具的结果是 JSON（"amount": 0、"days": 60），数字不带单位：只要数值相同就算支持
+    tool_nums = {c: {n.rstrip("0").rstrip(".") if "." in n else n for n in BARE_NUM.findall(DATE_RE.sub(" ", t))}
+                 for c, (t, docs) in blocks.items() if docs == {"tool"}}
     asked = facts(question)
     issues = []
     for text, cids in spans(answer):
@@ -108,9 +114,10 @@ def check(answer: str, blocks: dict[str, tuple[str, set[str]]], question: str = 
             issues.append({"sentence": text.strip(), "facts": sorted(fs), "kind": "未引用"})
             continue
         support = set().union(*(block_facts.get(c, set()) for c in cids))
+        cited_nums = set().union(*(tool_nums.get(c, set()) for c in cids))
         cited_docs = set().union(*(blocks[c][1] for c in cids if c in blocks))
-        for f in sorted(fs - support):
-            holders = [c for c, bf in block_facts.items() if f in bf]
+        for f in sorted(f for f in fs - support if f[0] not in cited_nums):
+            holders = [c for c, bf in block_facts.items() if f in bf] + [c for c, ns in tool_nums.items() if f[0] in ns]
             if not holders:
                 kind = "上下文中不存在"
             elif any(blocks[c][1] & cited_docs for c in holders):

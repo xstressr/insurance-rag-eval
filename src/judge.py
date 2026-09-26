@@ -79,11 +79,13 @@ JUDGE_PROMPTS = {
 def judge_one(
     row: dict, q: dict, chunks: list[dict], by_id: dict[str, int], llm: LLM, run: str, prompt: str = "j2"
 ) -> dict:
-    ctx = [{"cid": c["cid"], "idxs": [by_id[x] for x in c["chunk_ids"]]} for c in row["context"]]
+    ctx = [{"cid": c["cid"], "idxs": [by_id[x] for x in c["chunk_ids"]]} for c in row["context"] if c["chunk_ids"]]
+    tool_parts = [f"[{c['cid']}] 计算工具 {c['tool']} 的结果\n{c['text']}" for c in row["context"] if "text" in c]
+    context_text = render_context(chunks, ctx) + ("\n\n" + "\n\n".join(tool_parts) if tool_parts else "")
     user = (
         f"【题型】{q['type']}\n【问题】{q['question']}\n"
         f"【参考答案要点】\n" + "\n".join(f"- {p}" for p in q["must_include"]) + "\n\n"
-        f"【条款片段】\n{render_context(chunks, ctx)}\n\n【系统回答】\n{row['answer']}"
+        f"【条款片段】\n{context_text}\n\n【系统回答】\n{row['answer']}"
     )
     session = str(uuid.uuid5(uuid.NAMESPACE_URL, f"insurance-rag-eval/judge/{run}/{q['id']}"))
     resp = llm.chat(JUDGE_PROMPTS[prompt], user, session)

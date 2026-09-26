@@ -32,6 +32,7 @@ from pathlib import Path
 import numpy as np
 
 from answer import LLM, PROMPTS, REFUSAL, parse_json, summarize
+import rules
 from citecheck import SEVERE, check
 from evaluate import CHUNKS, EMB_DIR, GOLDEN, REPORTS, ROOT, SHORT, is_relevant, load_jsonl
 
@@ -102,6 +103,54 @@ TOOLS = [
 ]
 TOOL_NAMES = {t["function"]["name"] for t in TOOLS}
 
+# 计算工具：确定性规则，实现见 src/rules.py。只在 toolset="full" 时提供，问答评测仍用上面三个工具。
+CALC_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "policy_lookup",
+            "description": "查询保单信息：产品、基本保额、生效日、签收日、已交保费、已投保的可选责任、各等级已理赔次数、下期保费到期日。",
+            "parameters": {"type": "object", "properties": {"policy_id": {"type": "string", "description": "保单号，如 P001"}}, "required": ["policy_id"]},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "benefit_calc",
+            "description": "按条款规则计算某保单一次确诊应赔多少，自动处理观察期（等待期）、可选责任、给付次数上限。金额一律用本工具计算，不要自己算。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "policy_id": {"type": "string"},
+                    "level": {"type": "string", "enum": ["重疾", "中症", "轻症"], "description": "疾病等级；国寿的“轻度疾病”按轻症"},
+                    "diagnosis_date": {"type": "string", "description": "确诊日期 YYYY-MM-DD"},
+                    "accident": {"type": "boolean", "description": "是否因意外伤害导致"},
+                },
+                "required": ["policy_id", "level", "diagnosis_date"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "date_calc",
+            "description": "日期推算：从 start_date 起算 days 日，返回第一天和最后一天。条款写“自某日起 N 日”时 count_start=true；写“自次日起 N 日”时 count_start=false。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "start_date": {"type": "string", "description": "YYYY-MM-DD"},
+                    "days": {"type": "integer"},
+                    "count_start": {"type": "boolean"},
+                },
+                "required": ["start_date", "days"],
+            },
+        },
+    },
+]
+TOOLSETS = {"qa": TOOLS, "full": TOOLS[:2] + CALC_TOOLS + TOOLS[2:]}
+CALC_FUNCS = {"policy_lookup": rules.policy_lookup, "benefit_calc": rules.benefit_calc, "date_calc": rules.date_calc}
+_JSON_TYPES = {"string": str, "integer": int, "boolean": bool}
+
 AGENT_VERSION = "a1"  # 循环版本；提示词版本见 AGENT_PROMPTS
 # 回答规则沿用 p2 的 1～8 条，只把输出格式换成工具调用
 _P2_RULES = PROMPTS["p2"].split("规则：", 1)[1].split("只输出一个 JSON", 1)[0].strip()
@@ -132,6 +181,13 @@ AGENT_PROMPTS = {
 10. 只回答问题问到的内容，不要罗列与问题无关的条款细节。
 11. 必须调用 final_answer 提交答案，不要直接输出文字。""",
 }
+# a3：配合计算工具（toolset="full"）。保单数据是合成的，仅供评测。
+AGENT_PROMPTS["a3"] = AGENT_PROMPTS["a2"] + """
+
+计算工具（问题涉及具体保单号时使用）：
+12. 先用 policy_lookup 查保单；金额一律用 benefit_calc 计算，日期一律用 date_calc 推算，不要自己心算。
+13. 疾病等级（重疾 / 中症 / 轻症）不确定时，先检索条款的疾病定义再判断；国寿的“轻度疾病”按轻症。
+14. 最终答案写明结论和金额（或日期），引用计算工具结果的编号 [Cn]，必要时再引用相关条款。"""
 
 
 class Corpus:
@@ -163,8 +219,9 @@ class Corpus:
 class Episode:
     """一道题的一次执行：维护引用编号、看过的文本块和轨迹。"""
 
-    def __init__(self, corpus: Corpus, question: str = "", guard: int = 0) -> None:
+    def __init__(self, corpus: Corpus, question: str = "", guard: int = 0, tools: list[dict] = TOOLS) -> None:
         self.corpus = corpus
+        self.tools = tools
         self.question = question
         self.guard_left = guard  # 护栏还能退回几次
         self.guard_log: list[dict] = []
@@ -172,12 +229,25 @@ class Episode:
         self.seen_calls: dict[str, str] = {}
 
     def block_meta(self) -> dict[str, tuple[str, set[str]]]:
-        """{Cn: (片段全文, 所属文档)}，给引用校验用。"""
+        """{Cn: (片段全文, 所属文档)}，给引用校验用。计算工具的结果也是可引用的块，文档记为 tool。"""
         by_id = {c["chunk_id"]: c for c in self.corpus.chunks}
         return {
-            b["cid"]: ("".join(by_id[x]["text"] for x in b["chunk_ids"]), {by_id[x]["doc_id"] for x in b["chunk_ids"]})
+            b["cid"]: (b["text"], {"tool"})
+            if "text" in b
+            else ("".join(by_id[x]["text"] for x in b["chunk_ids"]), {by_id[x]["doc_id"] for x in b["chunk_ids"]})
             for b in self.blocks
         }
+
+    def calc(self, name: str, args: dict) -> str:
+        """执行计算工具；结果登记为可引用的块，答案里的金额和日期要引用它。"""
+        try:
+            out = CALC_FUNCS[name](**args)
+        except rules.ToolError as e:
+            return f"错误：{e}"
+        text = json.dumps(out, ensure_ascii=False)
+        cid = f"C{len(self.blocks) + 1}"
+        self.blocks.append({"cid": cid, "chunk_ids": [], "tool": name, "text": text})
+        return f"[{cid}] {name} 结果\n{text}"
 
     def _new_block(self, idxs: list[int]) -> str:
         cid = f"C{len(self.blocks) + 1}"
@@ -223,15 +293,16 @@ class Episode:
         return f"[{cid}] {self.corpus.where(c0)} | 第{c0['page_start']}-{c1['page_end']}页（全文）\n{text}"
 
 
-def validate(name: str, raw_args: str) -> tuple[dict | None, str | None]:
-    """程序层校验：工具名、JSON、必填字段、枚举值。返回 (参数, 错误信息)。"""
-    if name not in TOOL_NAMES:
-        return None, f"错误：没有名为“{name}”的工具。可用工具：{'、'.join(sorted(TOOL_NAMES))}。"
+def validate(name: str, raw_args: str, tools: list[dict] = TOOLS) -> tuple[dict | None, str | None]:
+    """程序层校验：工具名、JSON、必填字段、枚举值、类型。返回 (参数, 错误信息)。"""
+    names = {t["function"]["name"] for t in tools}
+    if name not in names:
+        return None, f"错误：没有名为“{name}”的工具。可用工具：{'、'.join(sorted(names))}。"
     try:
         args = json.loads(raw_args or "{}")
     except json.JSONDecodeError:
         return None, "错误：参数不是合法的 JSON。"
-    schema = next(t["function"]["parameters"] for t in TOOLS if t["function"]["name"] == name)
+    schema = next(t["function"]["parameters"] for t in tools if t["function"]["name"] == name)
     if not isinstance(args, dict):
         return None, "错误：参数必须是 JSON 对象。"
     missing = [k for k in schema["required"] if k not in args]
@@ -247,6 +318,14 @@ def validate(name: str, raw_args: str) -> tuple[dict | None, str | None]:
         bad += [f"未知产品“{p}”" for p in args.get("products") or [] if p not in PRODUCTS]
     if name == "read_clause" and args["product"] not in PRODUCTS:
         bad.append(f"未知产品“{args['product']}”，可选：{'、'.join(PRODUCTS)}")
+    if name in CALC_FUNCS:  # 计算工具按 schema 通用校验类型和枚举（bool 是 int 的子类，要单独排除）
+        for k, v in args.items():
+            spec = schema["properties"][k]
+            want = _JSON_TYPES.get(spec.get("type"))
+            if want and (not isinstance(v, want) or (want is int and isinstance(v, bool))):
+                bad.append(f"{k} 必须是 {spec['type']} 类型")
+            elif "enum" in spec and v not in spec["enum"]:
+                bad.append(f"{k} 只能是 {spec['enum']} 之一")
     if bad:
         return None, "错误：" + "；".join(bad) + "。"
     return args, None
@@ -285,7 +364,7 @@ def execute_calls(
     tool_msgs, final = [], None
     for call in calls:
         name, raw = call["function"]["name"], call["function"]["arguments"]
-        targs, err = validate(name, raw)
+        targs, err = validate(name, raw, ep.tools)
         sig = f"{name}:{json.dumps(targs, ensure_ascii=False, sort_keys=True)}" if targs else None
         if err:
             result = err
@@ -304,7 +383,12 @@ def execute_calls(
             result = f"重复调用：与之前的调用完全相同，结果见 {ep.seen_calls[sig]}。请换一个查询或直接作答。"
         else:
             first_cid = f"C{len(ep.blocks) + 1}"
-            result = ep.search(**targs) if name == "search" else ep.read_clause(**targs)
+            if name == "search":
+                result = ep.search(**targs)
+            elif name == "read_clause":
+                result = ep.read_clause(**targs)
+            else:
+                result = ep.calc(name, targs)
             if not result.startswith("错误"):
                 ep.seen_calls[sig] = f"{first_cid} 起的结果"
         trajectory.append({"step": step, "tool": name, "args": targs if targs else raw, "error": err, "result_head": result[:120]})
@@ -319,7 +403,7 @@ def text_answer(msg: dict) -> dict:
 
 
 def run_episode(q: dict, corpus: Corpus, llm: LLM, args: argparse.Namespace) -> dict:
-    ep = Episode(corpus, q["question"], args.guard)
+    ep = Episode(corpus, q["question"], args.guard, TOOLSETS[args.toolset])
     messages = [
         {"role": "system", "content": system_prompt(args.agent_prompt, args.max_steps)},
         {"role": "user", "content": q["question"]},
@@ -332,7 +416,7 @@ def run_episode(q: dict, corpus: Corpus, llm: LLM, args: argparse.Namespace) -> 
         final_round = step > args.max_steps
         if final_round:  # 步数用完：只留 final_answer 一个工具
             messages.append({"role": "user", "content": FORCE_ANSWER})
-        resp = llm.chat_tools(messages, ANSWER_ONLY if final_round else TOOLS, session)
+        resp = llm.chat_tools(messages, ANSWER_ONLY if final_round else ep.tools, session)
         cached_all &= resp["cached"]
         for k in usage:
             usage[k] += resp["usage"][k]
@@ -457,6 +541,7 @@ def main() -> None:
     ap.add_argument("--max-steps", type=int, default=6)
     ap.add_argument("--agent-prompt", default="a2", help="AGENT_PROMPTS 中的版本")
     ap.add_argument("--guard", type=int, default=1, help="引用校验护栏最多退回几次，0 = 关闭")
+    ap.add_argument("--toolset", default="qa", choices=sorted(TOOLSETS), help="qa：只有检索；full：加计算工具")
     ap.add_argument("--workers", type=int, default=3)
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--only", default=None, help="逗号分隔的题号，只跑这些题")

@@ -1,0 +1,66 @@
+{
+  "_note": "合成保单，全部虚构，仅用于 Agent 工具调用评测。不对应任何真实客户。2026-09-26 由 AI 编写。",
+  "policies": {
+    "P001": {
+      "product": "太保阿基米德",
+      "sum_insured": 500000,
+      "effective_date": "2025-03-01",
+      "signed_date": "2025-03-03",
+      "premiums_paid": 16000,
+      "options": ["可选保障1"],
+      "claims": {"轻症": 1},
+      "insured_age": 35
+    },
+    "P002": {
+      "product": "泰康惠嘉保",
+      "sum_insured": 300000,
+      "effective_date": "2026-06-01",
+      "signed_date": "2026-06-02",
+      "premiums_paid": 4056,
+      "options": [],
+      "claims": {},
+      "insured_age": 30
+    },
+    "P003": {
+      "product": "国寿康宁尊享",
+      "sum_insured": 400000,
+      "effective_date": "2026-05-10",
+      "signed_date": "2026-05-12",
+      "premiums_paid": 6200,
+      "options": ["可选保险责任一"],
+      "claims": {"轻症": 2},
+      "insured_age": 40,
+      "next_premium_due": "2027-05-10"
+    },
+    "P004": {
+      "product": "太保阿基米德",
+      "sum_insured": 200000,
+      "effective_date": "2024-11-20",
+      "signed_date": "2024-11-22",
+      "premiums_paid": 9000,
+      "options": [],
+      "claims": {},
+      "insured_age": 45
+    },
+    "P005": {
+      "product": "国寿康宁尊享",
+      "sum_insured": 300000,
+      "effective_date": "2025-08-01",
+      "signed_date": "2025-08-03",
+      "premiums_paid": 5100,
+      "options": [],
+      "claims": {},
+      "insured_age": 33
+    },
+    "P006": {
+      "product": "太保阿基米德",
+      "sum_insured": 300000,
+      "effective_date": "2023-06-15",
+      "signed_date": "2023-06-16",
+      "premiums_paid": 21000,
+      "options": ["可选保障1"],
+      "claims": {"轻症": 4},
+      "insured_age": 50
+    }
+  }
+}

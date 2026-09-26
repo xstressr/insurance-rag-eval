@@ -26,7 +26,7 @@ from langgraph.graph import END, START, StateGraph
 from agent import (
     ANSWER_ONLY,
     FORCE_ANSWER,
-    TOOLS,
+    TOOLSETS,
     Corpus,
     Episode,
     execute_calls,
@@ -54,7 +54,7 @@ def model_node(state: State, config: RunnableConfig) -> dict:
     step = state["step"] + 1
     forced = step > cfg["max_steps"]  # 步数用完：只留 final_answer 一个工具
     messages = state["messages"] + ([{"role": "user", "content": FORCE_ANSWER}] if forced else [])
-    resp = cfg["llm"].chat_tools(messages, ANSWER_ONLY if forced else TOOLS, cfg["session"])
+    resp = cfg["llm"].chat_tools(messages, ANSWER_ONLY if forced else cfg["ep"].tools, cfg["session"])
     usage = {k: state["usage"][k] + resp["usage"][k] for k in state["usage"]}
     return {
         "messages": messages + [resp["message"]],
@@ -105,7 +105,7 @@ GRAPH = build_graph()
 
 
 def run_episode(q: dict, corpus: Corpus, llm: LLM, args: argparse.Namespace) -> dict:
-    ep = Episode(corpus, q["question"], args.guard)
+    ep = Episode(corpus, q["question"], args.guard, TOOLSETS[args.toolset])
     init: State = {
         "messages": [
             {"role": "system", "content": system_prompt(args.agent_prompt, args.max_steps)},
@@ -134,6 +134,7 @@ def main() -> None:
     ap.add_argument("--max-steps", type=int, default=6)
     ap.add_argument("--agent-prompt", default="a2")
     ap.add_argument("--guard", type=int, default=1, help="引用校验护栏最多退回几次，0 = 关闭")
+    ap.add_argument("--toolset", default="qa", choices=["qa", "full"])
     ap.add_argument("--workers", type=int, default=3)
     ap.add_argument("--only", default=None)
     ap.add_argument("--print-graph", action="store_true", help="输出 Mermaid 图后退出")
