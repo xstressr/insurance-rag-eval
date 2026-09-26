@@ -68,8 +68,8 @@ def tools_node(state: State, config: RunnableConfig) -> dict:
     cfg = config["configurable"]
     trajectory = list(state["trajectory"])
     calls = state["messages"][-1]["tool_calls"]
-    tool_msgs, final = execute_calls(cfg["ep"], calls, state["step"], trajectory)
     forced = state["step"] > cfg["max_steps"]
+    tool_msgs, final = execute_calls(cfg["ep"], calls, state["step"], trajectory, allow_guard=not forced)
     stop = ("forced_answer" if forced else "final_answer") if final else state["stop"]
     return {"messages": state["messages"] + tool_msgs, "trajectory": trajectory, "final": final, "stop": stop}
 
@@ -105,7 +105,7 @@ GRAPH = build_graph()
 
 
 def run_episode(q: dict, corpus: Corpus, llm: LLM, args: argparse.Namespace) -> dict:
-    ep = Episode(corpus)
+    ep = Episode(corpus, q["question"], args.guard)
     init: State = {
         "messages": [
             {"role": "system", "content": system_prompt(args.agent_prompt, args.max_steps)},
@@ -133,6 +133,7 @@ def main() -> None:
     ap.add_argument("--golden", default=GOLDEN.name)
     ap.add_argument("--max-steps", type=int, default=6)
     ap.add_argument("--agent-prompt", default="a2")
+    ap.add_argument("--guard", type=int, default=1, help="引用校验护栏最多退回几次，0 = 关闭")
     ap.add_argument("--workers", type=int, default=3)
     ap.add_argument("--only", default=None)
     ap.add_argument("--print-graph", action="store_true", help="输出 Mermaid 图后退出")

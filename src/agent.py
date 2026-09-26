@@ -32,6 +32,7 @@ from pathlib import Path
 import numpy as np
 
 from answer import LLM, PROMPTS, REFUSAL, parse_json, summarize
+from citecheck import SEVERE, check
 from evaluate import CHUNKS, EMB_DIR, GOLDEN, REPORTS, ROOT, SHORT, is_relevant, load_jsonl
 
 EMBED_URL = "http://127.0.0.1:8765/embed"
@@ -162,10 +163,21 @@ class Corpus:
 class Episode:
     """一道题的一次执行：维护引用编号、看过的文本块和轨迹。"""
 
-    def __init__(self, corpus: Corpus) -> None:
+    def __init__(self, corpus: Corpus, question: str = "", guard: int = 0) -> None:
         self.corpus = corpus
+        self.question = question
+        self.guard_left = guard  # 护栏还能退回几次
+        self.guard_log: list[dict] = []
         self.blocks: list[dict] = []  # {"cid", "chunk_ids"}，与 answer.py 的 context 格式一致
         self.seen_calls: dict[str, str] = {}
+
+    def block_meta(self) -> dict[str, tuple[str, set[str]]]:
+        """{Cn: (片段全文, 所属文档)}，给引用校验用。"""
+        by_id = {c["chunk_id"]: c for c in self.corpus.chunks}
+        return {
+            b["cid"]: ("".join(by_id[x]["text"] for x in b["chunk_ids"]), {by_id[x]["doc_id"] for x in b["chunk_ids"]})
+            for b in self.blocks
+        }
 
     def _new_block(self, idxs: list[int]) -> str:
         cid = f"C{len(self.blocks) + 1}"
@@ -248,8 +260,28 @@ def system_prompt(version: str, max_steps: int) -> str:
     return AGENT_PROMPTS[version].replace("{max_steps}", str(max_steps))
 
 
-def execute_calls(ep: Episode, calls: list[dict], step: int, trajectory: list[dict]) -> tuple[list[dict], dict | None]:
-    """执行一轮里的全部工具调用：校验 → 去重 → 执行。返回 (工具结果消息, 最终答案或 None)。"""
+def guard_message(issues: list[dict]) -> str:
+    lines = ["答案未通过引用校验，请修正后重新调用 final_answer："]
+    for it in issues:
+        num = "、".join(f"{n}{u}" for n, u in it["facts"])
+        where = "、".join(it.get("cited", [])) or "无引用"
+        hint = {
+            "张冠李戴": "只出现在其他产品的片段里，请确认是否写错了产品",
+            "上下文中不存在": "在所有检索到的片段里都找不到（包括自行推算的数字）",
+            "未引用": "这段文字没有标注引用",
+        }[it["kind"]]
+        lines.append(f"- 【{it['kind']}】“{num}”（所引片段：{where}）{hint}。所在文字：…{it['sentence'][-60:]}")
+    lines.append("修正要求：数字必须来自它所引用的片段；写错产品的请更正并引用正确的片段；片段里没有的数字请删除；没有引用的请补上引用。")
+    return "\n".join(lines)
+
+
+def execute_calls(
+    ep: Episode, calls: list[dict], step: int, trajectory: list[dict], allow_guard: bool = True
+) -> tuple[list[dict], dict | None]:
+    """执行一轮里的全部工具调用：校验 → 去重 → 执行。返回 (工具结果消息, 最终答案或 None)。
+
+    护栏：final_answer 提交时跑引用校验，有严重问题且还有退回次数，就把问题清单作为工具结果退回，
+    本次提交不算数。强制作答轮（allow_guard=False）不启用，避免拿不到任何答案。"""
     tool_msgs, final = [], None
     for call in calls:
         name, raw = call["function"]["name"], call["function"]["arguments"]
@@ -258,8 +290,16 @@ def execute_calls(ep: Episode, calls: list[dict], step: int, trajectory: list[di
         if err:
             result = err
         elif name == "final_answer":
-            final = {"answer": targs["answer"], "answerable": targs["answerable"]}
-            result = "已提交。"
+            issues = []
+            if allow_guard and ep.guard_left > 0:
+                issues = [i for i in check(targs["answer"], ep.block_meta(), ep.question) if i["kind"] in SEVERE]
+            if issues:
+                ep.guard_left -= 1
+                ep.guard_log.append({"step": step, "answer": targs["answer"], "issues": issues})
+                result = guard_message(issues)
+            else:
+                final = {"answer": targs["answer"], "answerable": targs["answerable"]}
+                result = "已提交。"
         elif sig in ep.seen_calls:  # 幂等：同样的调用不重复执行，指向之前的结果
             result = f"重复调用：与之前的调用完全相同，结果见 {ep.seen_calls[sig]}。请换一个查询或直接作答。"
         else:
@@ -279,7 +319,7 @@ def text_answer(msg: dict) -> dict:
 
 
 def run_episode(q: dict, corpus: Corpus, llm: LLM, args: argparse.Namespace) -> dict:
-    ep = Episode(corpus)
+    ep = Episode(corpus, q["question"], args.guard)
     messages = [
         {"role": "system", "content": system_prompt(args.agent_prompt, args.max_steps)},
         {"role": "user", "content": q["question"]},
@@ -303,7 +343,7 @@ def run_episode(q: dict, corpus: Corpus, llm: LLM, args: argparse.Namespace) -> 
             final, stop = text_answer(msg), "text_answer"
             trajectory.append({"step": step, "tool": None, "note": "模型直接输出文字"})
             break
-        tool_msgs, final = execute_calls(ep, calls, step, trajectory)
+        tool_msgs, final = execute_calls(ep, calls, step, trajectory, allow_guard=not final_round)
         messages.extend(tool_msgs)
         if final:
             stop = "final_answer" if not final_round else "forced_answer"
@@ -357,6 +397,9 @@ def finalize(q: dict, ep: Episode, final: dict | None, stop: str, trajectory: li
         "n_duplicate_calls": sum(str(t.get("result_head", "")).startswith("重复调用") for t in tool_calls),
         "tools_used": [t["tool"] for t in tool_calls],
         "answer_chars": len(answer),
+        "guard_rejections": len(ep.guard_log),
+        "guard_log": ep.guard_log,
+        "residual_severe": [i for i in check(answer, ep.block_meta(), q["question"]) if i["kind"] in SEVERE],
         "uncited_sentences": uncited_sentences(answer),
         "trajectory": trajectory,
     }
@@ -368,7 +411,7 @@ def write_report(rows: list[dict], s: dict, args: argparse.Namespace, llm: LLM) 
     lines = [
         f"# Agent 报告 · {args.run_name}",
         "",
-        f"> 自动生成（{date.today()}）。评测集 `dataset/{args.golden}`。{getattr(args, 'engine', '手写循环')} `{AGENT_VERSION}`，提示词 `{args.agent_prompt}`，模型 `{llm.model}`，最多 {args.max_steps} 轮工具调用。",
+        f"> 自动生成（{date.today()}）。评测集 `dataset/{args.golden}`。{getattr(args, 'engine', '手写循环')} `{AGENT_VERSION}`，提示词 `{args.agent_prompt}`，模型 `{llm.model}`，最多 {args.max_steps} 轮工具调用，护栏退回上限 {getattr(args, 'guard', 0)} 次。",
         "",
         "## 指标",
         "",
@@ -383,6 +426,7 @@ def write_report(rows: list[dict], s: dict, args: argparse.Namespace, llm: LLM) 
         f"| 用过 read_clause 的题 | {sum('read_clause' in r['tools_used'] for r in rows)} |",
         f"| 平均看过的字数 | {s['avg_context_chars']:.0f} |",
         f"| 平均答案字数 | {sum(r['answer_chars'] for r in rows) / n:.0f} |",
+        f"| 护栏退回 | {sum(r.get('guard_rejections', 0) for r in rows)} 次（{sum(bool(r.get('guard_rejections')) for r in rows)} 题）；最终答案仍有严重问题 {sum(bool(r.get('residual_severe')) for r in rows)} 题 |",
         f"| 没带引用的句子 | {sum(len(r['uncited_sentences']) for r in rows)}（涉及 {sum(bool(r['uncited_sentences']) for r in rows)} 题） |",
         f"| token（输入 / 输出 / 其中思考） | {s['tokens_prompt']} / {s['tokens_completion']} / {s['tokens_reasoning']} |",
         "",
@@ -412,6 +456,7 @@ def main() -> None:
     ap.add_argument("--golden", default=GOLDEN.name)
     ap.add_argument("--max-steps", type=int, default=6)
     ap.add_argument("--agent-prompt", default="a2", help="AGENT_PROMPTS 中的版本")
+    ap.add_argument("--guard", type=int, default=1, help="引用校验护栏最多退回几次，0 = 关闭")
     ap.add_argument("--workers", type=int, default=3)
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--only", default=None, help="逗号分隔的题号，只跑这些题")

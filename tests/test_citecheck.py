@@ -74,3 +74,21 @@ def test_q027_misattribution_is_flagged():
     r = rows["q027"]
     kinds = {i["kind"] for i in check(r["answer"], block_texts(r, chunk_by_id), r["question"])}
     assert "张冠李戴" in kinds
+
+
+def test_guard_rejects_once_then_accepts():
+    """运行时护栏：严重问题第一次提交被退回；退回次数用完后，同样的答案会被接受。"""
+    rows, _ = _load("agent_v2_graph")
+    from agent import Corpus, Episode, execute_calls
+
+    r = rows["q027"]
+    ep = Episode(Corpus(), r["question"], guard=1)
+    ep.blocks = r["context"]
+    call = {
+        "id": "t1",
+        "function": {"name": "final_answer", "arguments": json.dumps({"answer": r["answer"], "answerable": True})},
+    }
+    msgs, final = execute_calls(ep, [call], 1, [])
+    assert final is None and "张冠李戴" in msgs[0]["content"] and ep.guard_left == 0
+    msgs, final = execute_calls(ep, [call], 2, [])
+    assert final is not None and msgs[0]["content"] == "已提交。"
