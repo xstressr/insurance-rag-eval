@@ -78,10 +78,11 @@ class Retriever:
 
     RRF：score = Σ 1 / (rrf_k + 名次)。只看名次、不看原始分数，
     所以 BM25 分数（几到几十）和余弦（0 到 1）量纲不同也能直接合并。
+    加权 RRF：BM25 那一项乘以 w_bm25（Dense 固定为 1）。w_bm25=1 就是等权，=0 退化成纯 Dense。
     """
 
-    def __init__(self, kind: str, index: BM25, chunk_vecs=None, question_vecs=None, rrf_k: int = 60):
-        self.kind, self.index, self.rrf_k = kind, index, rrf_k
+    def __init__(self, kind: str, index: BM25, chunk_vecs=None, question_vecs=None, rrf_k: int = 60, w_bm25: float = 1.0):
+        self.kind, self.index, self.rrf_k, self.w_bm25 = kind, index, rrf_k, w_bm25
         self.chunk_vecs, self.question_vecs = chunk_vecs, question_vecs
 
     def rank(self, qi: int, qtok: list[str]) -> tuple[list[int], dict[int, dict]]:
@@ -106,7 +107,7 @@ class Retriever:
                 info[i]["score"] = float(cos[i])
             return dense_order, info
 
-        fused = [1 / (self.rrf_k + bm_rank[i]) + 1 / (self.rrf_k + dense_rank[i]) for i in range(n)]
+        fused = [self.w_bm25 / (self.rrf_k + bm_rank[i]) + 1 / (self.rrf_k + dense_rank[i]) for i in range(n)]
         for i in range(n):
             info[i]["score"] = fused[i]
         return sorted(range(n), key=lambda i: (-fused[i], i)), info
@@ -191,6 +192,7 @@ def write_report(results: list[dict], args: argparse.Namespace, n_chunks: int) -
         "| 项 | 值 |",
         "|---|---|",
         f"| 检索器 | {RETRIEVER_NAME[args.retriever]}{'（向量：' + args.emb + '）' if args.retriever != 'bm25' else ''} |",
+        *([f"| RRF | rrf_k={args.rrf_k}，BM25 权重 {args.w_bm25}，Dense 权重 1 |"] if args.retriever == "hybrid" else []),
         f"| k1 / b / IDF | {args.k1} / {args.b} / {args.idf} |",
         f"| 分词 | jieba {'搜索引擎' if args.tokenizer == 'search' else '精确'}模式 + 词典 `{args.terms}` + 停用词 |",
         f"| 索引字段 | `{args.field}` |",
@@ -290,6 +292,7 @@ def main() -> None:
     ap.add_argument("--retriever", default="bm25", choices=["bm25", "dense", "hybrid"])
     ap.add_argument("--emb", default="bge-m3_index_text", help="data/processed/emb 下的向量目录")
     ap.add_argument("--rrf-k", type=int, default=60)
+    ap.add_argument("--w-bm25", type=float, default=1.0, help="加权 RRF 中 BM25 的权重，Dense 固定为 1")
     ap.add_argument("--tokenizer", default="precise", choices=["precise", "search"])
     ap.add_argument("--terms", default="insurance_terms.txt", help="src/resources 下的词典文件名")
     ap.add_argument("--golden", default=GOLDEN.name, help="dataset 下的评测集文件名")
@@ -311,7 +314,7 @@ def main() -> None:
         if meta["chunk_ids"] != [c["chunk_id"] for c in chunks] or meta["question_ids"] != [q["id"] for q in golden]:
             raise SystemExit(f"{emb} 与当前 chunks / golden 不一致，请重新运行 src/embed.py")
         chunk_vecs, question_vecs = np.load(emb / "chunks.npy"), np.load(emb / "questions.npy")
-    retriever = Retriever(args.retriever, index, chunk_vecs, question_vecs, rrf_k=args.rrf_k)
+    retriever = Retriever(args.retriever, index, chunk_vecs, question_vecs, rrf_k=args.rrf_k, w_bm25=args.w_bm25)
     results = evaluate(chunks, golden, retriever, args.k, product_filter=args.product_filter)
 
     (REPORTS / "runs").mkdir(parents=True, exist_ok=True)
