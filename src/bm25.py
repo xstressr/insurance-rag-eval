@@ -16,7 +16,8 @@ from pathlib import Path
 
 import jieba
 
-TERMS_FILE = Path(__file__).resolve().parent / "resources" / "insurance_terms.txt"
+RESOURCES = Path(__file__).resolve().parent / "resources"
+TERMS_FILE = RESOURCES / "insurance_terms.txt"
 
 # 只去掉虚词和疑问词；“本合同”这类高频实词交给 IDF 自动降权，不手工删。
 STOPWORDS = set(
@@ -26,14 +27,31 @@ STOPWORDS = set(
 HAS_WORD_CHAR = re.compile(r"[一-鿿A-Za-z0-9]")
 
 _dict_loaded = False
+_mode = "precise"
 
 
-def _load_terms() -> None:
+def configure(terms_file: Path = TERMS_FILE, mode: str = "precise") -> None:
+    """选择词典和分词模式；要在第一次 tokenize 之前调用（jieba 词典是全局状态）。
+
+    - precise：jieba 精确模式，每个位置只出一种切法。
+    - search：搜索引擎模式，长词会额外拆出子词，如“中症疾病”→ 中症 / 疾病 / 中症疾病，
+      让用户说简称（中症、轻症）也能命中条款里的全称。
+    """
+    global _dict_loaded, _mode
+    if mode not in ("precise", "search"):
+        raise ValueError(f"unknown mode: {mode}")
+    if _dict_loaded:
+        raise RuntimeError("configure() must be called before the first tokenize()")
+    _mode = mode
+    _load_terms(terms_file)
+
+
+def _load_terms(terms_file: Path = TERMS_FILE) -> None:
     global _dict_loaded
     if _dict_loaded:
         return
     jieba.setLogLevel(60)  # 关掉 jieba 首次加载时的提示输出
-    for line in TERMS_FILE.read_text(encoding="utf-8").splitlines():
+    for line in terms_file.read_text(encoding="utf-8").splitlines():
         word = line.strip()
         if word and not word.startswith("#"):
             jieba.add_word(word, freq=100_000)  # 高词频保证整词优先
@@ -41,10 +59,11 @@ def _load_terms() -> None:
 
 
 def tokenize(text: str) -> list[str]:
-    """jieba 精确模式分词，去掉标点、空白和停用词，英文转小写。"""
+    """jieba 分词（模式见 configure），去掉标点、空白和停用词，英文转小写。"""
     _load_terms()
     tokens = []
-    for tok in jieba.lcut(text):
+    cut = jieba.lcut_for_search if _mode == "search" else jieba.lcut
+    for tok in cut(text):
         tok = tok.strip().lower()
         if tok and HAS_WORD_CHAR.search(tok) and tok not in STOPWORDS:
             tokens.append(tok)

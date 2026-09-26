@@ -17,7 +17,7 @@ import json
 from collections import defaultdict
 from pathlib import Path
 
-from bm25 import BM25, tokenize
+from bm25 import BM25, RESOURCES, configure, tokenize
 
 ROOT = Path(__file__).resolve().parent.parent
 CHUNKS = ROOT / "data" / "processed" / "chunks.jsonl"
@@ -140,7 +140,7 @@ def write_report(results: list[dict], args: argparse.Namespace, n_chunks: int) -
         "|---|---|",
         "| 检索器 | 手写 BM25（已用 rank_bm25 对照验证） |",
         f"| k1 / b / IDF | {args.k1} / {args.b} / {args.idf} |",
-        "| 分词 | jieba 精确模式 + 保险术语词典 + 停用词 |",
+        f"| 分词 | jieba {'搜索引擎' if args.tokenizer == 'search' else '精确'}模式 + 词典 `{args.terms}` + 停用词 |",
         f"| 索引字段 | `{args.field}` |",
         f"| 产品过滤 | {'开（问题提到的产品才参与排序）' if args.product_filter else '关'} |",
         f"| 文本块数 | {n_chunks} |",
@@ -235,8 +235,11 @@ def main() -> None:
     ap.add_argument("--idf", default="lucene", choices=["lucene", "okapi"])
     ap.add_argument("--field", default="index_text", choices=["index_text", "text"])
     ap.add_argument("--product-filter", action="store_true")
+    ap.add_argument("--tokenizer", default="precise", choices=["precise", "search"])
+    ap.add_argument("--terms", default="insurance_terms.txt", help="src/resources 下的词典文件名")
     args = ap.parse_args()
 
+    configure(RESOURCES / args.terms, mode=args.tokenizer)
     chunks = load_jsonl(CHUNKS)
     golden = load_jsonl(GOLDEN)
     index = BM25([tokenize(c[args.field]) for c in chunks], k1=args.k1, b=args.b, idf_variant=args.idf)
