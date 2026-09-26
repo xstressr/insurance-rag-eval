@@ -16,9 +16,9 @@ import numpy as np
 
 from answer import build_context, select_seeds
 from bm25 import BM25, RESOURCES, configure, tokenize
-from evaluate import CHUNKS, EMB_DIR, GOLDEN, REPORTS, Retriever, detect_products, is_relevant, load_jsonl
+from evaluate import CHUNKS, EMB_DIR, GOLDEN, REPORTS, ROOT, Retriever, detect_products, is_relevant, load_jsonl
 
-SETS = [("golden_v2.jsonl", "bge-m3_index_text"), ("golden_blind_v1.jsonl", "bge-m3_index_text_blind")]
+SETS = [("golden_v2.jsonl", "bge-m3_index_text", "golden_v2"), ("golden_blind_v1.jsonl", "bge-m3_index_text_blind", "blind_v1")]
 CONFIGS = {
     "基线（k5，扩展±1，8000 字）": dict(k=5, quota=0, neighbors=0, budget=8000),
     "k8": dict(k=8, quota=0, neighbors=0, budget=12000),
@@ -29,6 +29,9 @@ CONFIGS = {
     "对比题按产品分配 5 块": dict(k=5, quota=5, neighbors=0, budget=12000),
     "相邻条款（全部 5 个种子）": dict(k=5, quota=0, neighbors=5, budget=16000),
     "分配 5 块 + 相邻条款（全部）": dict(k=5, quota=5, neighbors=5, budget=20000),
+    "重排（前 20 名）": dict(k=5, quota=0, neighbors=0, budget=8000, rerank=True),
+    "重排 + 对比题分配 3 块": dict(k=5, quota=3, neighbors=0, budget=8000, rerank=True),
+    "重排 + 相邻条款（全部）": dict(k=5, quota=0, neighbors=5, budget=16000, rerank=True),
 }
 
 
@@ -44,19 +47,23 @@ def main() -> None:
     chunks = load_jsonl(CHUNKS)
     index = BM25([tokenize(c["index_text"]) for c in chunks])
     out = {}
-    for golden_file, emb in SETS:
+    for golden_file, emb, rerank in SETS:
         golden = load_jsonl(GOLDEN.parent / golden_file)
-        ret = Retriever("dense", index, np.load(EMB_DIR / emb / "chunks.npy"), np.load(EMB_DIR / emb / "questions.npy"))
-        orders = []
-        for qi, q in enumerate(golden):
-            order, _ = ret.rank(qi, tokenize(q["question"]))
-            products = detect_products(q["question"])
-            if products:
-                order = [i for i in order if chunks[i]["doc_id"] in products]
-            orders.append((order, products))
+        cv, qv = np.load(EMB_DIR / emb / "chunks.npy"), np.load(EMB_DIR / emb / "questions.npy")
+        rr = np.load(ROOT / "data" / "processed" / "rerank" / rerank / "scores.npy")
+        rets = {False: Retriever("dense", index, cv, qv), True: Retriever("rerank", index, cv, qv, rerank_scores=rr, rerank_top=20)}
+        orders = {}
+        for use_rr, ret in rets.items():
+            orders[use_rr] = []
+            for qi, q in enumerate(golden):
+                order, _ = ret.rank(qi, tokenize(q["question"]))
+                products = detect_products(q["question"])
+                if products:
+                    order = [i for i in order if chunks[i]["doc_id"] in products]
+                orders[use_rr].append((order, products))
         for name, cfg in CONFIGS.items():
             complete, recall, chars, missing = 0, 0.0, 0, []
-            answerable = [(q, o) for q, o in zip(golden, orders) if q["type"] != "refuse"]
+            answerable = [(q, o) for q, o in zip(golden, orders[cfg.get("rerank", False)]) if q["type"] != "refuse"]
             for q, (order, products) in answerable:
                 seeds = select_seeds(chunks, order, products, cfg["k"], cfg["quota"], cfg["neighbors"])
                 ctx = build_context(chunks, seeds, len(seeds), cfg["budget"], expand=1)
@@ -74,7 +81,7 @@ def main() -> None:
     lines = [
         "# 上下文证据完整率（离线，不调用模型）",
         "",
-        "> 2026-09-26。检索 bge-m3 + 产品过滤；上下文扩展 ±1 块。只统计可回答题。",
+        "> 2026-09-26。检索 bge-m3 + 产品过滤（标“重排”的再经 bge-reranker-v2-m3 精排前 20 名）；上下文扩展 ±1 块。只统计可回答题。",
         "",
         "| 策略 | golden_v2 完整率 | 证据召回 | 平均字数 | 盲测 完整率 | 证据召回 | 平均字数 | 盲测未完整的题 |",
         "|---|---|---|---|---|---|---|---|",

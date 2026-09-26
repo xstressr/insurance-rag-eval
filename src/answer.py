@@ -237,6 +237,56 @@ class LLM:
             path.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
         return {**out, "cached": False}
 
+    def chat_tools(self, messages: list[dict], tools: list[dict], session: str) -> dict:
+        """多轮 + 工具调用。缓存键 = 模型 + 完整对话历史 + 工具定义，所以整条轨迹可以原样回放。
+
+        返回 {message, finish_reason, model, usage, seconds, cached}，message 可以直接追加回对话历史。
+        """
+        key = hashlib.sha256(
+            json.dumps(["tools", self.prefix, self.model, messages, tools], ensure_ascii=False).encode()
+        ).hexdigest()[:24]
+        path = CACHE / f"{key}.json"
+        if path.exists():
+            return {**json.loads(path.read_text(encoding="utf-8")), "cached": True}
+        t0 = time.time()
+        resp = self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            tools=tools,
+            temperature=0,
+            **({"max_tokens": self.max_tokens} if self.max_tokens else {}),
+            extra_headers={"x-opencode-session": session},
+            extra_body=self.extra_body or None,
+        )
+        choice = resp.choices[0]
+        msg = {"role": "assistant", "content": choice.message.content or ""}
+        if choice.message.tool_calls:
+            msg["tool_calls"] = [
+                {"id": t.id, "type": "function", "function": {"name": t.function.name, "arguments": t.function.arguments}}
+                for t in choice.message.tool_calls
+            ]
+        # DeepSeek 思考模式下，同一轮工具调用中要把 reasoning_content 原样带回
+        reasoning = getattr(choice.message, "reasoning_content", None)
+        if reasoning:
+            msg["reasoning_content"] = reasoning
+        u = resp.usage
+        details = getattr(u, "completion_tokens_details", None)
+        out = {
+            "message": msg,
+            "finish_reason": choice.finish_reason,
+            "model": resp.model,
+            "usage": {
+                "prompt": u.prompt_tokens,
+                "completion": u.completion_tokens,
+                "reasoning": getattr(details, "reasoning_tokens", None) or 0,
+            },
+            "seconds": round(time.time() - t0, 1),
+        }
+        if out["finish_reason"] != "length":
+            CACHE.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
+        return {**out, "cached": False}
+
 
 def run_one(q: dict, qi: int, chunks: list[dict], retriever: Retriever, llm: LLM, args: argparse.Namespace) -> dict:
     order, _ = retriever.rank(qi, tokenize(q["question"]))
@@ -325,7 +375,7 @@ def write_report(rows: list[dict], s: dict, args: argparse.Namespace, llm: LLM, 
         "|---|---|",
         f"| 模型 | `{llm.model}`（OpenCode Go，temperature=0，max_tokens={args.max_tokens or '模型上限'}） |",
         f"| 提示词 | `{args.prompt}`（`src/answer.py` 的 PROMPTS） |",
-        f"| 检索 | 向量检索 bge-m3（`{args.emb}`）+ 产品过滤，文本块 {n_chunks} 个 |",
+        f"| 检索 | 向量检索 bge-m3（`{args.emb}`）{'+ 重排 bge-reranker-v2-m3（前 ' + str(args.rerank_top) + ' 名）' if args.rerank else ''} + 产品过滤，文本块 {n_chunks} 个 |",
         f"| 种子 | 前 {args.k} 块；对比题按产品分配 {args.quota or '关'}；相邻条款 {args.neighbors or '关'} |",
         f"| 上下文 | 前 {args.k} 个种子块，{'同条款前后各扩展 ' + str(args.expand) + ' 块，' if args.expand else ''}去重，字数预算 {args.char_budget} |",
         "",
@@ -369,6 +419,8 @@ def main() -> None:
     ap.add_argument("--char-budget", type=int, default=8000)
     ap.add_argument("--expand", type=int, default=1, help="small-to-big：同条款前后各带几块，0 = gen_v1 的做法")
     ap.add_argument("--prompt", default="p2", choices=sorted(PROMPTS))
+    ap.add_argument("--rerank", default=None, help="data/processed/rerank 下的分数目录；不设 = 纯向量检索")
+    ap.add_argument("--rerank-top", type=int, default=20, help="向量检索前多少名进入重排")
     ap.add_argument("--quota", type=int, default=0, help="对比题每个产品各取几块，0 = 不分配")
     ap.add_argument("--neighbors", type=int, default=0, help="对前 N 个种子块带上相邻条款，0 = 不带")
     ap.add_argument("--max-tokens", type=int, default=None, help="不设则用模型自己的最大输出上限")
@@ -384,7 +436,17 @@ def main() -> None:
     if meta["chunk_ids"] != [c["chunk_id"] for c in chunks] or meta["question_ids"] != [q["id"] for q in golden]:
         raise SystemExit(f"{emb} 与当前 chunks / golden 不一致，请重新运行 src/embed.py")
     index = BM25([tokenize(c["index_text"]) for c in chunks])  # dense 模式下不参与排序，Retriever 需要它
-    retriever = Retriever("dense", index, np.load(emb / "chunks.npy"), np.load(emb / "questions.npy"))
+    rerank_scores = None
+    if args.rerank:
+        rdir = ROOT / "data" / "processed" / "rerank" / args.rerank
+        rmeta = json.loads((rdir / "meta.json").read_text(encoding="utf-8"))
+        if rmeta["chunk_ids"] != meta["chunk_ids"] or rmeta["question_ids"] != meta["question_ids"]:
+            raise SystemExit(f"{rdir} 与当前 chunks / golden 不一致，请重新运行 src/rerank.py")
+        rerank_scores = np.load(rdir / "scores.npy")
+    retriever = Retriever(
+        "rerank" if args.rerank else "dense", index, np.load(emb / "chunks.npy"), np.load(emb / "questions.npy"),
+        rerank_scores=rerank_scores, rerank_top=args.rerank_top,
+    )
     llm = LLM(args.max_tokens)
 
     todo = list(enumerate(golden))[: args.limit]
