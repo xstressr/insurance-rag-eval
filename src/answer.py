@@ -116,6 +116,45 @@ def build_context(chunks: list[dict], order: list[int], k: int, char_budget: int
     return blocks
 
 
+def select_seeds(chunks: list[dict], order: list[int], products: set[str], k: int, quota: int = 0, neighbors: int = 0) -> list[int]:
+    """从检索排序中挑“种子块”，交给 build_context 组装。
+
+    quota>0：问题提到两个及以上产品（对比题）时，每个产品各取前 quota 块，再按原名次合并，
+      避免上下文被排名靠前的单一产品占满。
+    neighbors>0：对前 neighbors 个种子块，把同一文档、同一部分里前后相邻的条款（按原文顺序）
+      也作为种子追加在最后，优先级最低，字数预算不够时先被舍弃。针对“完整答案要跨相邻条款”。
+    """
+    if quota and len(products) >= 2:
+        picked = set()
+        for doc in products:
+            picked.update([i for i in order if chunks[i]["doc_id"] == doc][:quota])
+        seeds = [i for i in order if i in picked]
+    else:
+        seeds = order[:k]
+    if neighbors:
+        clause_seq: dict[tuple, list[tuple]] = {}
+        first_chunk: dict[tuple, int] = {}
+        for i, c in enumerate(chunks):
+            if c["section"] == "guide":
+                continue
+            key = (c["doc_id"], c["part"], c["clause_id"])
+            if key not in first_chunk:
+                first_chunk[key] = i
+                clause_seq.setdefault((c["doc_id"], c["part"]), []).append(key)
+        extra = []
+        for i in seeds[:neighbors]:
+            c = chunks[i]
+            if c["section"] == "guide":
+                continue
+            seq = clause_seq[(c["doc_id"], c["part"])]
+            pos = seq.index((c["doc_id"], c["part"], c["clause_id"]))
+            for j in (pos - 1, pos + 1):
+                if 0 <= j < len(seq) and first_chunk[seq[j]] not in seeds + extra:
+                    extra.append(first_chunk[seq[j]])
+        seeds = seeds + extra
+    return seeds
+
+
 def render_context(chunks: list[dict], ctx: list[dict]) -> str:
     parts = []
     for item in ctx:
@@ -204,7 +243,8 @@ def run_one(q: dict, qi: int, chunks: list[dict], retriever: Retriever, llm: LLM
     products = detect_products(q["question"])
     if products:
         order = [i for i in order if chunks[i]["doc_id"] in products]
-    ctx = build_context(chunks, order, args.k, args.char_budget, args.expand)
+    seeds = select_seeds(chunks, order, products, args.k, args.quota, args.neighbors)
+    ctx = build_context(chunks, seeds, len(seeds), args.char_budget, args.expand)
     user = f"【条款片段】\n{render_context(chunks, ctx)}\n\n【问题】\n{q['question']}"
     session = str(uuid.uuid5(uuid.NAMESPACE_URL, f"insurance-rag-eval/{args.run_name}/{q['id']}"))
     resp = llm.chat(PROMPTS[args.prompt], user, session)
@@ -286,6 +326,7 @@ def write_report(rows: list[dict], s: dict, args: argparse.Namespace, llm: LLM, 
         f"| 模型 | `{llm.model}`（OpenCode Go，temperature=0，max_tokens={args.max_tokens or '模型上限'}） |",
         f"| 提示词 | `{args.prompt}`（`src/answer.py` 的 PROMPTS） |",
         f"| 检索 | 向量检索 bge-m3（`{args.emb}`）+ 产品过滤，文本块 {n_chunks} 个 |",
+        f"| 种子 | 前 {args.k} 块；对比题按产品分配 {args.quota or '关'}；相邻条款 {args.neighbors or '关'} |",
         f"| 上下文 | 前 {args.k} 个种子块，{'同条款前后各扩展 ' + str(args.expand) + ' 块，' if args.expand else ''}去重，字数预算 {args.char_budget} |",
         "",
         "## 指标",
@@ -328,6 +369,8 @@ def main() -> None:
     ap.add_argument("--char-budget", type=int, default=8000)
     ap.add_argument("--expand", type=int, default=1, help="small-to-big：同条款前后各带几块，0 = gen_v1 的做法")
     ap.add_argument("--prompt", default="p2", choices=sorted(PROMPTS))
+    ap.add_argument("--quota", type=int, default=0, help="对比题每个产品各取几块，0 = 不分配")
+    ap.add_argument("--neighbors", type=int, default=0, help="对前 N 个种子块带上相邻条款，0 = 不带")
     ap.add_argument("--max-tokens", type=int, default=None, help="不设则用模型自己的最大输出上限")
     ap.add_argument("--workers", type=int, default=3)
     ap.add_argument("--limit", type=int, default=None, help="只跑前 N 题，用于冒烟测试")
