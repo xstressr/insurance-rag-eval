@@ -1,0 +1,15 @@
+{"id": "q001", "run": "gen_v3_p2", "correctness": "correct", "faithful": true, "note": "", "labeled_by": "claude", "labeled_at": "2026-09-26", "protocol": "在运行 LLM 评委之前标注，标注时未看评委输出"}
+{"id": "q003", "run": "gen_v3_p2", "correctness": "correct", "faithful": true, "note": "条款没用“等待期”一词，答案按含义称为等待期，可接受", "labeled_by": "claude", "labeled_at": "2026-09-26", "protocol": "在运行 LLM 评委之前标注，标注时未看评委输出"}
+{"id": "q007", "run": "gen_v3_p2", "correctness": "correct", "faithful": true, "note": "", "labeled_by": "claude", "labeled_at": "2026-09-26", "protocol": "在运行 LLM 评委之前标注，标注时未看评委输出"}
+{"id": "q012", "run": "gen_v3_p2", "correctness": "correct", "faithful": true, "note": "", "labeled_by": "claude", "labeled_at": "2026-09-26", "protocol": "在运行 LLM 评委之前标注，标注时未看评委输出"}
+{"id": "q020", "run": "gen_v3_p2", "correctness": "correct", "faithful": true, "note": "", "labeled_by": "claude", "labeled_at": "2026-09-26", "protocol": "在运行 LLM 评委之前标注，标注时未看评委输出"}
+{"id": "q029", "run": "gen_v3_p2", "correctness": "incorrect", "faithful": true, "note": "检索失败导致拒答；拒答本身诚实，没有编造", "labeled_by": "claude", "labeled_at": "2026-09-26", "protocol": "在运行 LLM 评委之前标注，标注时未看评委输出"}
+{"id": "q030", "run": "gen_v3_p2", "correctness": "correct", "faithful": true, "note": "", "labeled_by": "claude", "labeled_at": "2026-09-26", "protocol": "在运行 LLM 评委之前标注，标注时未看评委输出"}
+{"id": "q031", "run": "gen_v3_p2", "correctness": "correct", "faithful": true, "note": "拒答题，正确说明示例不代表一般保费", "labeled_by": "claude", "labeled_at": "2026-09-26", "protocol": "在运行 LLM 评委之前标注，标注时未看评委输出"}
+{"id": "q033", "run": "gen_v3_p2", "correctness": "correct", "faithful": true, "note": "拒答题；顺带提到泰康等待期，多余但不算错", "labeled_by": "claude", "labeled_at": "2026-09-26", "protocol": "在运行 LLM 评委之前标注，标注时未看评委输出"}
+{"id": "b01", "run": "gen_v3_p2_blind", "correctness": "incorrect", "faithful": true, "note": "检索失败导致拒答", "labeled_by": "claude", "labeled_at": "2026-09-26", "protocol": "在运行 LLM 评委之前标注，标注时未看评委输出"}
+{"id": "b03", "run": "gen_v3_p2_blind", "correctness": "incorrect", "faithful": true, "note": "上下文不完整导致拒答", "labeled_by": "claude", "labeled_at": "2026-09-26", "protocol": "在运行 LLM 评委之前标注，标注时未看评委输出"}
+{"id": "b05", "run": "gen_v3_p2_blind", "correctness": "partial", "faithful": true, "note": "说出了“片段未载明最高年龄”，但没说以保险单载明为准，也没提保障延长选择权", "labeled_by": "claude", "labeled_at": "2026-09-26", "protocol": "在运行 LLM 评委之前标注，标注时未看评委输出"}
+{"id": "b10", "run": "gen_v3_p2_blind", "correctness": "correct", "faithful": true, "note": "要点全部覆盖，附加的免责与减保内容经核对有原文依据", "labeled_by": "claude", "labeled_at": "2026-09-26", "protocol": "在运行 LLM 评委之前标注，标注时未看评委输出"}
+{"id": "b12", "run": "gen_v3_p2_blind", "correctness": "partial", "faithful": true, "note": "国寿部分正确，阿基米德缺失，没有给出比较结论", "labeled_by": "claude", "labeled_at": "2026-09-26", "protocol": "在运行 LLM 评委之前标注，标注时未看评委输出"}
+{"id": "b15", "run": "gen_v3_p2_blind", "correctness": "correct", "faithful": true, "note": "拒答题，给出“条款未约定门诊报销、按确诊给付”，与标准答案一致", "labeled_by": "claude", "labeled_at": "2026-09-26", "protocol": "在运行 LLM 评委之前标注，标注时未看评委输出"}
