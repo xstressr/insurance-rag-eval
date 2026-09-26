@@ -57,30 +57,55 @@ SYSTEM_PROMPT = f"""你是保险条款问答助手。只能依据用户给出的
 {{"answerable": true 或 false, "answer": "带 [Cn] 引用的回答"}}"""
 
 
-def build_context(chunks: list[dict], order: list[int], k: int, char_budget: int) -> list[dict]:
-    """按检索名次取前 k 块：去掉正文重复的块，超出字数预算就停止。编号 C1..Ck 与名次一致。"""
-    ctx, seen, used = [], set(), 0
-    for i in order:
+def build_context(chunks: list[dict], order: list[int], k: int, char_budget: int, expand: int = 0) -> list[dict]:
+    """按检索名次取前 k 个“种子块”组装上下文，编号 C1..Cn 与名次一致。
+
+    expand=0：每个种子块单独成段（gen_v1 的做法），去掉正文重复的块。
+    expand=N：small-to-big。条款过长会被切成多块，命中的那一块不一定含答案，
+      所以把同一条款里种子块前后各 N 块一起带上，同一条款的块合并成一段、按原文顺序排列。
+    超出字数预算就停止（第一段总会放进去）。
+    """
+    siblings: dict[tuple, dict[int, int]] = {}
+    for i, c in enumerate(chunks):
+        siblings.setdefault((c["doc_id"], c["part"], c["clause_id"]), {})[c["sub_index"]] = i
+
+    blocks: list[dict] = []
+    by_clause: dict[tuple, dict] = {}
+    seen_text, used = set(), 0
+    for i in order[:k]:
         c = chunks[i]
-        if c["text"] in seen:
+        key = (c["doc_id"], c["part"], c["clause_id"])
+        lo, hi = c["sub_index"] - expand, c["sub_index"] + expand
+        want = [siblings[key][j] for j in range(lo, hi + 1) if j in siblings[key]]
+        block = by_clause.get(key) if expand else None
+        new = [j for j in want if chunks[j]["text"] not in seen_text and (block is None or j not in block["idxs"])]
+        if not new:
             continue
-        if used + c["n_chars"] > char_budget and ctx:
+        cost = sum(chunks[j]["n_chars"] for j in new)
+        if used + cost > char_budget and blocks:
             break
-        seen.add(c["text"])
-        used += c["n_chars"]
-        ctx.append({"cid": f"C{len(ctx) + 1}", "idx": i, "chunk_id": c["chunk_id"]})
-        if len(ctx) == k:
-            break
-    return ctx
+        used += cost
+        seen_text.update(chunks[j]["text"] for j in new)
+        if block is None:
+            block = {"cid": f"C{len(blocks) + 1}", "idxs": []}
+            blocks.append(block)
+            if expand:
+                by_clause[key] = block
+        block["idxs"] = sorted(set(block["idxs"]) | set(new), key=lambda j: chunks[j]["sub_index"])
+    for b in blocks:
+        b["chunk_ids"] = [chunks[j]["chunk_id"] for j in b["idxs"]]
+    return blocks
 
 
 def render_context(chunks: list[dict], ctx: list[dict]) -> str:
     parts = []
     for item in ctx:
-        c = chunks[item["idx"]]
-        where = "阅读指引" if c["section"] == "guide" else f"{c['part']} {c['clause_id']} {c['title']}".strip()
-        pages = f"第{c['page_start']}页" if c["page_start"] == c["page_end"] else f"第{c['page_start']}-{c['page_end']}页"
-        parts.append(f"[{item['cid']}] {PRODUCT_NAME[c['doc_id']]} | {where} | {pages}\n{c['text']}")
+        first, last = chunks[item["idxs"][0]], chunks[item["idxs"][-1]]
+        where = "阅读指引" if first["section"] == "guide" else f"{first['part']} {first['clause_id']} {first['title']}".strip()
+        p0, p1 = first["page_start"], last["page_end"]
+        pages = f"第{p0}页" if p0 == p1 else f"第{p0}-{p1}页"
+        text = "".join(chunks[j]["text"] for j in item["idxs"])
+        parts.append(f"[{item['cid']}] {PRODUCT_NAME[first['doc_id']]} | {where} | {pages}\n{text}")
     return "\n\n".join(parts)
 
 
@@ -147,7 +172,7 @@ def run_one(q: dict, qi: int, chunks: list[dict], retriever: Retriever, llm: LLM
     products = detect_products(q["question"])
     if products:
         order = [i for i in order if chunks[i]["doc_id"] in products]
-    ctx = build_context(chunks, order, args.k, args.char_budget)
+    ctx = build_context(chunks, order, args.k, args.char_budget, args.expand)
     user = f"【条款片段】\n{render_context(chunks, ctx)}\n\n【问题】\n{q['question']}"
     session = str(uuid.uuid5(uuid.NAMESPACE_URL, f"insurance-rag-eval/{args.run_name}/{q['id']}"))
     resp = llm.chat(SYSTEM_PROMPT, user, session)
@@ -159,7 +184,9 @@ def run_one(q: dict, qi: int, chunks: list[dict], retriever: Retriever, llm: LLM
     cids = {item["cid"]: item for item in ctx}
     cited = list(dict.fromkeys(re.findall(r"\[(C\d+)\]", answer)))
     relevant_cids = [
-        item["cid"] for item in ctx if any(is_relevant(chunks[item["idx"]], s) for s in q["expected_sources"])
+        item["cid"]
+        for item in ctx
+        if any(is_relevant(chunks[j], s) for j in item["idxs"] for s in q["expected_sources"])
     ]
     return {
         "id": q["id"],
@@ -169,7 +196,8 @@ def run_one(q: dict, qi: int, chunks: list[dict], retriever: Retriever, llm: LLM
         "refused": refused,
         "parse_ok": parsed is not None,
         "finish_reason": resp.get("finish_reason"),
-        "context": [{"cid": it["cid"], "chunk_id": it["chunk_id"]} for it in ctx],
+        "context": [{"cid": it["cid"], "chunk_ids": it["chunk_ids"]} for it in ctx],
+        "context_chars": sum(chunks[j]["n_chars"] for it in ctx for j in it["idxs"]),
         "relevant_in_context": relevant_cids,
         "cited": cited,
         "invalid_citations": [c for c in cited if c not in cids],
@@ -208,6 +236,7 @@ def summarize(rows: list[dict]) -> dict:
         "tokens_completion": sum(r["usage"]["completion"] for r in rows),
         "tokens_reasoning": sum(r["usage"]["reasoning"] for r in rows),
         "api_calls": sum(not r["cached"] for r in rows),
+        "avg_context_chars": sum(r["context_chars"] for r in rows) / len(rows),
     }
 
 
@@ -225,7 +254,7 @@ def write_report(rows: list[dict], s: dict, args: argparse.Namespace, llm: LLM, 
         f"| 模型 | `{llm.model}`（OpenCode Go，temperature=0，max_tokens={args.max_tokens}） |",
         f"| 提示词 | `{PROMPT_VERSION}`（`src/answer.py` 的 SYSTEM_PROMPT） |",
         f"| 检索 | 向量检索 bge-m3（`{args.emb}`）+ 产品过滤，文本块 {n_chunks} 个 |",
-        f"| 上下文 | 前 {args.k} 块，去重，字数预算 {args.char_budget} |",
+        f"| 上下文 | 前 {args.k} 个种子块，{'同条款前后各扩展 ' + str(args.expand) + ' 块，' if args.expand else ''}去重，字数预算 {args.char_budget} |",
         "",
         "## 指标",
         "",
@@ -239,6 +268,7 @@ def write_report(rows: list[dict], s: dict, args: argparse.Namespace, llm: LLM, 
         f"| 无效引用率 | {pct(s['invalid_citation_rate'])} | 引用了上下文里不存在的编号 |",
         f"| 引用到证据 | {pct(s['cites_evidence'])} | 证据在上下文且模型作答时，引用里包含证据块 |",
         f"| JSON 解析失败 / 被截断 | {s['parse_fail']} / {s['truncated']} | |",
+        f"| 平均上下文字数 | {s['avg_context_chars']:.0f} | |",
         f"| token（输入 / 输出 / 其中思考） | {s['tokens_prompt']} / {s['tokens_completion']} / {s['tokens_reasoning']} | 本次实际调用 {s['api_calls']} 次，其余来自缓存 |",
         "",
         "## 逐题",
@@ -264,6 +294,7 @@ def main() -> None:
     ap.add_argument("--emb", default="bge-m3_index_text")
     ap.add_argument("--k", type=int, default=5)
     ap.add_argument("--char-budget", type=int, default=4000)
+    ap.add_argument("--expand", type=int, default=0, help="small-to-big：同条款前后各带几块")
     ap.add_argument("--max-tokens", type=int, default=4096)  # 推理模型的思考也占这个额度
     ap.add_argument("--workers", type=int, default=3)
     ap.add_argument("--limit", type=int, default=None, help="只跑前 N 题，用于冒烟测试")
