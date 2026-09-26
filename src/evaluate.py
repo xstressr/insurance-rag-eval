@@ -184,7 +184,7 @@ def write_report(results: list[dict], args: argparse.Namespace, n_chunks: int) -
     lines = [
         f"# 检索评测报告 · {args.run_name}",
         "",
-        "> 自动生成。评测集 `dataset/golden_v1.jsonl`（33 题，学习者 2026-09-26 核定）。",
+        f"> 自动生成。评测集 `dataset/{args.golden}`（{len(results)} 题，{args.golden_status}）。",
         "",
         "## 配置",
         "",
@@ -292,11 +292,16 @@ def main() -> None:
     ap.add_argument("--rrf-k", type=int, default=60)
     ap.add_argument("--tokenizer", default="precise", choices=["precise", "search"])
     ap.add_argument("--terms", default="insurance_terms.txt", help="src/resources 下的词典文件名")
+    ap.add_argument("--golden", default=GOLDEN.name, help="dataset 下的评测集文件名")
     args = ap.parse_args()
 
     configure(RESOURCES / args.terms, mode=args.tokenizer)
     chunks = load_jsonl(CHUNKS)
-    golden = load_jsonl(GOLDEN)
+    golden = load_jsonl(GOLDEN.parent / args.golden)
+    if all(q.get("verified_by") == "learner" for q in golden):
+        args.golden_status = f"学习者 {golden[0]['verified_at']} 核定"
+    else:  # 未经学习者核定的题只能当参考，报告里必须写明
+        args.golden_status = "AI 标注，待学习者核定"
     index = BM25([tokenize(c[args.field]) for c in chunks], k1=args.k1, b=args.b, idf_variant=args.idf)
     chunk_vecs = question_vecs = None
     if args.retriever != "bm25":

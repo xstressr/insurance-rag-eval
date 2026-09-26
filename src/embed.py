@@ -37,10 +37,11 @@ def main() -> None:
     ap.add_argument("--max-len", type=int, default=1024)  # 最长的块约 750 字，1024 个 token 足够
     ap.add_argument("--batch", type=int, default=16)
     ap.add_argument("--name", default=None, help="输出目录名，默认 bge-m3_<field>")
+    ap.add_argument("--golden", default=GOLDEN.name, help="dataset 下的评测集文件名")
     args = ap.parse_args()
 
     chunks = load_jsonl(CHUNKS)
-    golden = load_jsonl(GOLDEN)
+    golden = load_jsonl(GOLDEN.parent / args.golden)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = SentenceTransformer(args.model, device=device)
     model.max_seq_length = args.max_len
