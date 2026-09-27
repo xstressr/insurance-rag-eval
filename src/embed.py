@@ -22,7 +22,9 @@ ROOT = Path(__file__).resolve().parent.parent
 CHUNKS = ROOT / "data" / "processed" / "chunks.jsonl"
 GOLDEN = ROOT / "dataset" / "golden_v1.jsonl"
 EMB_DIR = ROOT / "data" / "processed" / "emb"
-DEFAULT_MODEL = os.environ.get("BGE_M3_DIR", r"D:\Projects\models\bge-m3")
+# 本地有权重就用本地目录；否则用 Hugging Face 上的模型名（首次运行会下载约 2.3GB，Docker 里存到缓存卷）
+LOCAL_MODEL = r"D:\Projects\models\bge-m3"
+DEFAULT_MODEL = os.environ.get("BGE_M3_DIR") or (LOCAL_MODEL if os.path.isdir(LOCAL_MODEL) else "BAAI/bge-m3")
 
 
 def load_jsonl(path: Path) -> list[dict]:

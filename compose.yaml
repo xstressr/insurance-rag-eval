@@ -1,0 +1,48 @@
+# 用法见 README“复现”一节。key 只从 .env 在运行时读取，不进镜像；向量服务只在 compose 内部网络可见。
+x-app: &app
+  build: .
+  image: insurance-rag-eval:app
+  volumes: [".:/app"]
+  env_file:
+    - path: .env
+      required: false
+  environment:
+    EMBED_URL: http://embed-server:8765/embed
+
+x-embed: &embed
+  build: { context: ., dockerfile: docker/embed.Dockerfile }
+  image: insurance-rag-eval:embed
+  volumes: [".:/app", "hf-cache:/hf-cache"]
+
+services:
+  app:                      # docker compose run --rm app [offline|data|dense-eval]
+    <<: *app
+    entrypoint: ["sh", "scripts/reproduce.sh"]
+    command: ["offline"]
+
+  embed:                    # docker compose --profile embed run --rm embed
+    <<: *embed
+    profiles: ["embed"]
+    command: ["sh", "scripts/reproduce.sh", "dense"]
+
+  embed-server:
+    <<: *embed
+    profiles: ["llm"]
+    environment:
+      EMBED_HOST: 0.0.0.0
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=5)"]
+      interval: 10s
+      retries: 30
+      start_period: 60s
+
+  llm:                      # docker compose --profile llm run --rm llm
+    <<: *app
+    profiles: ["llm"]
+    depends_on:
+      embed-server: { condition: service_healthy }
+    entrypoint: ["sh", "scripts/reproduce.sh"]
+    command: ["llm"]
+
+volumes:
+  hf-cache:

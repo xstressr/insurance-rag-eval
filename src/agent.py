@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import time
 import urllib.request
@@ -39,7 +40,7 @@ from citecheck import SEVERE, check
 from privacy import redact
 from evaluate import CHUNKS, EMB_DIR, GOLDEN, REPORTS, ROOT, SHORT, is_relevant, load_jsonl
 
-EMBED_URL = "http://127.0.0.1:8765/embed"
+EMBED_URL = os.environ.get("EMBED_URL", "http://127.0.0.1:8765/embed")
 PRODUCTS = {
     "太保阿基米德": "cpic_archimedes_2025",
     "泰康惠嘉保": "taikang_huijiabao_2026",

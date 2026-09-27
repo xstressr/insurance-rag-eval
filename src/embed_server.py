@@ -3,7 +3,7 @@
 需要 PyTorch，所以在 Miniconda 里运行：
     C:\\Users\\xstre\\miniconda3\\python.exe src/embed_server.py
 
-只监听 127.0.0.1。接口：
+默认只监听 127.0.0.1；Docker 里设 EMBED_HOST=0.0.0.0，端口只在 compose 内部网络可见。接口：
     POST /embed  {"texts": ["..."]}  →  {"vectors": [[...], ...]}   （L2 归一化，点积即余弦）
     GET  /health                      →  {"model": "bge-m3", "dim": 1024}
 只用标准库 http.server，不引入 Web 框架。
@@ -18,8 +18,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import torch
 from sentence_transformers import SentenceTransformer
 
-HOST, PORT = "127.0.0.1", int(os.environ.get("EMBED_PORT", "8765"))
-MODEL_DIR = os.environ.get("BGE_M3_DIR", r"D:\Projects\models\bge-m3")
+HOST, PORT = os.environ.get("EMBED_HOST", "127.0.0.1"), int(os.environ.get("EMBED_PORT", "8765"))
+LOCAL_MODEL = r"D:\Projects\models\bge-m3"
+MODEL_DIR = os.environ.get("BGE_M3_DIR") or (LOCAL_MODEL if os.path.isdir(LOCAL_MODEL) else "BAAI/bge-m3")
 
 model = SentenceTransformer(MODEL_DIR, device="cuda" if torch.cuda.is_available() else "cpu")
 model.max_seq_length = 1024

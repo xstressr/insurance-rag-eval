@@ -37,7 +37,7 @@
 
 ## 工程
 
-- [ ] README 仍是项目初始化时的内容，要按现在的模块和结果重写。
+- [ ] Docker 镜像只做了配置校验（`docker compose config`），还没有实际构建和端到端跑过：构建要拉基础镜像、PyPI 依赖和 CPU 版 PyTorch，需要单独授权。
 - [ ] 工程目录：CLAUDE.md 约定 Windows 工程放在 `D:\Projects\xstress\<repo>`，本项目目前在 `D:\Projects\insurance-rag-eval`。
 - [ ] 每个配置只跑一次；重要结论要跑 3 次看波动。
 - [ ] 接口失败与重试次数没有记录（客户端自动重试 2 次，仍失败就中断整次运行）；延迟长尾 24～35 秒疑似服务端排队，需要记录重试后才能确认（见 `reports/ops_v1_summary.md`）。
