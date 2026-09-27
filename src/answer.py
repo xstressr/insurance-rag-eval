@@ -119,6 +119,8 @@ def parse_subquestions(text: str) -> list[str]:
         subs = json.loads(m.group(0))["subquestions"] if m else []
     except (json.JSONDecodeError, KeyError, TypeError):
         subs = []
+    if not isinstance(subs, list):  # 模型偶尔给一个字符串，别把它按字拆开
+        return []
     return [s.strip() for s in subs if isinstance(s, str) and s.strip()][:4]
 
 

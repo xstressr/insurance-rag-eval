@@ -35,6 +35,8 @@ dense)
   $PY src/embed.py --golden golden_blind_v1.jsonl --name bge-m3_index_text_blind
   $PY src/embed.py --golden golden_blind_v2.jsonl --name bge-m3_index_text_blind2
   $PY src/embed.py --golden golden_blind_v3.jsonl --name bge-m3_index_text_blind3
+  $PY src/embed.py --golden golden_blind_v5.jsonl --name bge-m3_index_text_blind5
+  $PY src/embed.py --golden golden_blind_v6.jsonl --name bge-m3_index_text_blind6
   ;;
 dense-eval)
   $PY src/evaluate.py --run-name dense_v2_golden_v2 --golden golden_v2.jsonl $DENSE
@@ -42,6 +44,8 @@ dense-eval)
   $PY src/evaluate.py --run-name blind_v2_dense --golden golden_blind_v2.jsonl --emb bge-m3_index_text_blind2 $DENSE
   $PY src/evaluate.py --run-name blind_v2_1_dense --golden golden_blind_v2.1.jsonl --emb bge-m3_index_text_blind2 $DENSE
   $PY src/evaluate.py --run-name blind_v3_dense --golden golden_blind_v3.jsonl --emb bge-m3_index_text_blind3 $DENSE
+  $PY src/evaluate.py --run-name blind_v5_dense --golden golden_blind_v5.jsonl --emb bge-m3_index_text_blind5 $DENSE
+  $PY src/evaluate.py --run-name blind_v6_dense --golden golden_blind_v6.jsonl --emb bge-m3_index_text_blind6 $DENSE
   ;;
 llm)
   # 约 16×1 + 16×4 次生成调用、32 次评委调用。结果有缓存（data/processed/llm_cache），重跑不再计费。
@@ -59,6 +63,23 @@ llm)
   $PY src/agent_graph.py --run-name agent_v3_guard_blind3 --golden golden_blind_v3.jsonl --agent-prompt a2 --guard 1
   $PY src/judge.py --run gen_v3_p2_blind3 --golden golden_blind_v3.jsonl
   $PY src/judge.py --run agent_v3_guard_blind3 --golden golden_blind_v3.jsonl
+  # blind_v5、blind_v6：单次 RAG 与 Agent
+  for s in 5 6; do
+    $PY src/answer.py --run-name gen_v3_p2_blind$s --golden golden_blind_v$s.jsonl --emb bge-m3_index_text_blind$s
+    $PY src/agent_graph.py --run-name agent_v3_guard_blind$s --golden golden_blind_v$s.jsonl --agent-prompt a2 --guard 1
+    $PY src/judge.py --run gen_v3_p2_blind$s --golden golden_blind_v$s.jsonl
+    $PY src/judge.py --run agent_v3_guard_blind$s --golden golden_blind_v$s.jsonl
+  done
+  # 拆子问题 d2（需要 embed-server 现算检索词的向量）：5 个开发集 + 检验集 v6
+  for spec in "gen_v4_d2 golden_v2 bge-m3_index_text" "gen_v4_d2_blind golden_blind_v1 bge-m3_index_text_blind" \
+      "gen_v4_d2_blind2_1 golden_blind_v2.1 bge-m3_index_text_blind2" "gen_v4_d2_blind3 golden_blind_v3 bge-m3_index_text_blind3" \
+      "gen_v4_d2_blind5 golden_blind_v5 bge-m3_index_text_blind5" "gen_v4_d2_blind6 golden_blind_v6 bge-m3_index_text_blind6"; do
+    set -- $spec
+    $PY src/answer.py --run-name $1 --golden $2.jsonl --emb $3 --decompose d2 --sub-k 5
+    $PY src/judge.py --run $1 --golden $2.jsonl
+  done
+  $PY src/decompose_report.py --name decompose_dev --sets dev >/dev/null
+  $PY src/decompose_report.py --name decompose_v6 --sets v6 >/dev/null
   $PY src/ops_report.py --name ops_v1 >/dev/null
   ;;
 *)

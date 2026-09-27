@@ -26,6 +26,7 @@ SETS = {
     "blind2_1": ("golden_blind_v2.1.jsonl", "bge-m3_index_text_blind2"),
     "blind3": ("golden_blind_v3.jsonl", "bge-m3_index_text_blind3"),
     "blind5": ("golden_blind_v5.jsonl", "bge-m3_index_text_blind5"),
+    "blind6": ("golden_blind_v6.jsonl", "bge-m3_index_text_blind6"),  # 检验集，只加数据
 }
 # 与 answer.py 的默认参数一致：k=5、expand=1、预算 8000；拆开时每个检索词取前 sub_k 块、预算 split_budget
 BASE = dict(k=5, char_budget=8000, expand=1, quota=0, neighbors=0, whole_clause=0, sub_k=3, split_budget=12000, decompose=None)
