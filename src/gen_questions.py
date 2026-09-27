@@ -1,7 +1,7 @@
 """blind_v3：让没见过条款的模型出题，再按事先写定的规则机械筛选。规则见 dataset/blind_v3_protocol.md。
 
-    uv run python src/gen_questions.py generate   # 调用出题模型，写 dataset/blind_v3_candidates.jsonl
-    uv run python src/gen_questions.py select     # 去重 + 分层抽样，写 dataset/golden_blind_v3.jsonl
+    uv run python src/gen_questions.py generate [--set v5]  # 调用出题模型，写 dataset/blind_<set>_candidates.jsonl
+    uv run python src/gen_questions.py select [--set v5]    # 去重 + 分层抽样，写 dataset/golden_blind_<set>.jsonl
 
 去重需要本地向量服务（src/embed_server.py）。
 """
@@ -18,19 +18,36 @@ import urllib.request
 import uuid
 
 import numpy as np
+from openai import BadRequestError
 
 from agent import EMBED_URL
 from answer import CACHE, LLM
 from evaluate import ROOT, load_jsonl
 
 DATASET = ROOT / "dataset"
-CANDIDATES = DATASET / "blind_v3_candidates.jsonl"
-OUT = DATASET / "golden_blind_v3.jsonl"
-WRITERS = ["kimi-k3", "qwen3.8-max", "muse-spark-1.3-contributor"]  # 顺序也是去重和补足的顺序
-QUOTA = {"kimi-k3": 7, "qwen3.8-max": 7, "muse-spark-1.3-contributor": 6}
-PER_WRITER, SEED, SIM = 15, 20260927, 0.90
+PER_WRITER, SIM = 15, 0.90
 RESPONSES_ONLY = {"muse-spark-1.3-contributor"}  # OpenCode 上这个模型只支持 Responses 接口
-EXISTING = ["golden_v2.jsonl", "golden_blind_v1.jsonl", "golden_blind_v2.jsonl", "tool_tasks_v1.jsonl", "security_cases_v2.jsonl"]
+_BASE = ["golden_v2.jsonl", "golden_blind_v1.jsonl", "golden_blind_v2.jsonl", "tool_tasks_v1.jsonl", "security_cases_v2.jsonl"]
+# 每批的出题模型（顺序也是去重和补足的顺序）、配额、种子、去重对照集。v3 的取值与协议提交时完全相同。
+CONFIGS = {
+    "v3": {"writers": ["kimi-k3", "qwen3.8-max", "muse-spark-1.3-contributor"], "quota": [7, 7, 6], "seed": 20260927,
+           "existing": _BASE, "prefix": "d", "protocol": "dataset/blind_v3_protocol.md"},
+    "v5": {"writers": ["mimo-v2.6-pro", "hy3", "grok-4.7"], "quota": [7, 7, 6], "seed": 2026092705,
+           "existing": _BASE + ["golden_blind_v3.jsonl"], "prefix": "e", "protocol": "dataset/blind_v5_protocol.md"},
+}
+
+
+def use(set_name: str) -> None:
+    """把模块级参数切到某一批。"""
+    global SET, CANDIDATES, OUT, WRITERS, QUOTA, SEED, EXISTING, PREFIX, PROTOCOL
+    cfg = CONFIGS[set_name]
+    SET, WRITERS, SEED, EXISTING, PREFIX, PROTOCOL = set_name, cfg["writers"], cfg["seed"], cfg["existing"], cfg["prefix"], cfg["protocol"]
+    QUOTA = dict(zip(WRITERS, cfg["quota"]))
+    CANDIDATES = DATASET / f"blind_{set_name}_candidates.jsonl"
+    OUT = DATASET / f"golden_blind_{set_name}.jsonl"
+
+
+use("v3")
 
 WRITER_PROMPT = """你在帮忙测试一个“保险条款问答助手”。助手能查阅下面三款重大疾病保险的条款原文，以及中国保险行业协会的《重大疾病保险的疾病定义使用规范（2020年修订版）》：
 
@@ -95,9 +112,15 @@ def generate() -> None:
     rows = []
     for w in WRITERS:
         llm = LLM(None, model=w)
-        session = str(uuid.uuid5(uuid.NAMESPACE_URL, f"insurance-rag-eval/blind_v3/{w}"))
+        session = str(uuid.uuid5(uuid.NAMESPACE_URL, f"insurance-rag-eval/blind_{SET}/{w}"))
         call = chat_responses if w in RESPONSES_ONLY else LLM.chat
-        resp = call(llm, "你是一名普通的保险消费者。", WRITER_PROMPT.format(n=PER_WRITER), session)
+        try:
+            resp = call(llm, "你是一名普通的保险消费者。", WRITER_PROMPT.format(n=PER_WRITER), session)
+        except BadRequestError as e:  # 有的模型只支持 Responses 接口
+            if "ModelProtocolUnsupported" not in str(e):
+                raise
+            print(f"{w}: chat 接口不支持，改用 Responses 接口（temperature 为服务端默认值）")
+            resp = chat_responses(llm, "你是一名普通的保险消费者。", WRITER_PROMPT.format(n=PER_WRITER), session)
         items = parse_array(resp["content"])
         print(f"{w}: {len(items)} 题，cached={resp['cached']}，{resp['usage']}")
         rows += [{"writer": w, "rank": i, "question": x["question"].strip(), "scenario": x.get("scenario", "")} for i, x in enumerate(items)]
@@ -138,9 +161,9 @@ def select() -> None:
     with OUT.open("w", encoding="utf-8", newline="\n") as f:
         for i, c in enumerate(picked, 1):
             f.write(json.dumps({
-                "id": f"d{i:02d}", "question": c["question"], "writer": c["writer"], "scenario": c["scenario"],
+                "id": f"{PREFIX}{i:02d}", "question": c["question"], "writer": c["writer"], "scenario": c["scenario"],
                 "status": "frozen_unlabeled", "author": c["writer"], "written_at": "2026-09-27",
-                "blindness": "出题模型没见过条款、已有题目和系统输出；筛选按 dataset/blind_v3_protocol.md 机械执行",
+                "blindness": f"出题模型没见过条款、已有题目和系统输出；筛选按 {PROTOCOL} 机械执行",
             }, ensure_ascii=False) + "\n")
     print(f"候选 {len(cands)}，格式合格 {len(ok)}，去重后 {len(kept)}，抽中 {len(picked)}")
     for w in WRITERS:
@@ -153,4 +176,7 @@ def select() -> None:
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("stage", choices=["generate", "select"])
-    {"generate": generate, "select": select}[ap.parse_args().stage]()
+    ap.add_argument("--set", default="v3", choices=sorted(CONFIGS))
+    args = ap.parse_args()
+    use(args.set)
+    {"generate": generate, "select": select}[args.stage]()
