@@ -31,11 +31,13 @@ from agent import (
     Episode,
     execute_calls,
     finalize,
+    principal_of,
     system_prompt,
     text_answer,
     write_report,
 )
 from answer import LLM, summarize
+from privacy import redact
 from evaluate import GOLDEN, REPORTS, ROOT, load_jsonl
 
 
@@ -105,11 +107,11 @@ GRAPH = build_graph()
 
 
 def run_episode(q: dict, corpus: Corpus, llm: LLM, args: argparse.Namespace) -> dict:
-    ep = Episode(corpus, q["question"], args.guard, TOOLSETS[args.toolset])
+    ep = Episode(corpus, q["question"], args.guard, TOOLSETS[args.toolset], principal_of(q))
     init: State = {
         "messages": [
             {"role": "system", "content": system_prompt(args.agent_prompt, args.max_steps)},
-            {"role": "user", "content": q["question"]},
+            {"role": "user", "content": redact(q["question"])[0]},
         ],
         "step": 0,
         "final": None,

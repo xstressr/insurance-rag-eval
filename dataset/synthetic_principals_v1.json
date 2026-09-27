@@ -1,0 +1,11 @@
+{
+  "_note": "合成身份，全部虚构，仅用于权限与隔离测试。2026-09-26 由 AI 编写。",
+  "principals": {
+    "U1": {"role": "customer", "name": "客户甲", "policies": ["P001", "P004"]},
+    "U2": {"role": "customer", "name": "客户乙", "policies": ["P002"]},
+    "U3": {"role": "customer", "name": "客户丙", "policies": ["P003", "P005", "P006"]},
+    "S_CPIC": {"role": "staff", "name": "太保员工", "tenant": "太保阿基米德"},
+    "S_TK": {"role": "staff", "name": "泰康员工", "tenant": "泰康惠嘉保"},
+    "S_CL": {"role": "staff", "name": "国寿员工", "tenant": "国寿康宁尊享"}
+  }
+}

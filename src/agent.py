@@ -33,7 +33,9 @@ import numpy as np
 
 from answer import LLM, PROMPTS, REFUSAL, parse_json, summarize
 import rules
+from access import DENIED, SYSTEM, Principal
 from citecheck import SEVERE, check
+from privacy import redact
 from evaluate import CHUNKS, EMB_DIR, GOLDEN, REPORTS, ROOT, SHORT, is_relevant, load_jsonl
 
 EMBED_URL = "http://127.0.0.1:8765/embed"
@@ -219,9 +221,14 @@ class Corpus:
 class Episode:
     """一道题的一次执行：维护引用编号、看过的文本块和轨迹。"""
 
-    def __init__(self, corpus: Corpus, question: str = "", guard: int = 0, tools: list[dict] = TOOLS) -> None:
+    def __init__(
+        self, corpus: Corpus, question: str = "", guard: int = 0, tools: list[dict] = TOOLS, principal: Principal = SYSTEM
+    ) -> None:
         self.corpus = corpus
         self.tools = tools
+        self.principal = principal  # 由调用方（登录态）传入，对话内容改变不了它
+        self.allowed_docs = principal.allowed_docs({c["doc_id"] for c in corpus.chunks})
+        self.denials: list[str] = []  # 被权限拒绝的工具调用，用于评测
         self.question = question
         self.guard_left = guard  # 护栏还能退回几次
         self.guard_log: list[dict] = []
@@ -240,6 +247,11 @@ class Episode:
 
     def calc(self, name: str, args: dict) -> str:
         """执行计算工具；结果登记为可引用的块，答案里的金额和日期要引用它。"""
+        if name in ("policy_lookup", "benefit_calc"):  # 保单权限：不存在与无权访问返回同一句话
+            policy = rules.load_policies().get(args["policy_id"])
+            if policy is None or not self.principal.can_access_policy(args["policy_id"], policy["product"]):
+                self.denials.append(f"{name}:{args['policy_id']}")
+                return f"错误：{DENIED}"
         try:
             out = CALC_FUNCS[name](**args)
         except rules.ToolError as e:
@@ -255,13 +267,19 @@ class Episode:
         return cid
 
     def search(self, query: str, products: list[str] | None = None) -> str:
-        docs = {PRODUCTS[p] for p in products} if products else None
-        cos = self.corpus.vecs @ self.corpus.embed(query)
+        docs = {PRODUCTS[p] for p in products} if products else set(self.allowed_docs)
+        denied = docs - self.allowed_docs
+        if denied:
+            self.denials.append("search:" + ",".join(sorted(denied)))
+            docs &= self.allowed_docs
+            if not docs:
+                return "错误：无权检索这些产品的条款。"
+        # 权限过滤发生在排序之前：只在有权访问的文本块里算相似度
+        cand = np.array([i for i, c in enumerate(self.corpus.chunks) if c["doc_id"] in docs])
+        cos = self.corpus.vecs[cand] @ self.corpus.embed(query)
         hits, seen_clause = [], set()
-        for i in np.argsort(-cos):
+        for i in cand[np.argsort(-cos, kind="stable")]:
             c = self.corpus.chunks[i]
-            if docs and c["doc_id"] not in docs:
-                continue
             key = (c["doc_id"], c["part"], c["clause_id"], c["section"] == "guide")
             if key in seen_clause:  # 同一条款只出一次，要全文用 read_clause
                 continue
@@ -279,6 +297,9 @@ class Episode:
 
     def read_clause(self, product: str, clause_id: str, part: str | None = None) -> str:
         doc = PRODUCTS[product]
+        if doc not in self.allowed_docs:
+            self.denials.append(f"read_clause:{doc}")
+            return "错误：无权读取该产品的条款。"
         cands = [k for k in self.corpus.clauses if k[0] == doc and k[2] == clause_id.strip() and (not part or k[1] == part)]
         if not cands:
             return f"错误：{product} 没有条款号为“{clause_id}”的条款。请使用检索结果中显示的条款号。"
@@ -402,11 +423,18 @@ def text_answer(msg: dict) -> dict:
     return {"answer": parsed["answer"] if parsed else msg["content"], "answerable": parsed.get("answerable") if parsed else None}
 
 
+def principal_of(q: dict) -> Principal:
+    """评测题可以指定身份（principal 字段）；不指定时用 system（不受限），与之前的实验一致。"""
+    from access import load_principal
+
+    return load_principal(q["principal"]) if q.get("principal") else SYSTEM
+
+
 def run_episode(q: dict, corpus: Corpus, llm: LLM, args: argparse.Namespace) -> dict:
-    ep = Episode(corpus, q["question"], args.guard, TOOLSETS[args.toolset])
+    ep = Episode(corpus, q["question"], args.guard, TOOLSETS[args.toolset], principal_of(q))
     messages = [
         {"role": "system", "content": system_prompt(args.agent_prompt, args.max_steps)},
-        {"role": "user", "content": q["question"]},
+        {"role": "user", "content": redact(q["question"])[0]},
     ]
     session = str(uuid.uuid5(uuid.NAMESPACE_URL, f"insurance-rag-eval/{args.run_name}/{q['id']}"))
     trajectory, usage = [], {"prompt": 0, "completion": 0, "reasoning": 0}
@@ -481,6 +509,9 @@ def finalize(q: dict, ep: Episode, final: dict | None, stop: str, trajectory: li
         "n_duplicate_calls": sum(str(t.get("result_head", "")).startswith("重复调用") for t in tool_calls),
         "tools_used": [t["tool"] for t in tool_calls],
         "answer_chars": len(answer),
+        "principal": ep.principal.id,
+        "denials": ep.denials,
+        "pii_redacted": redact(q["question"])[1],
         "guard_rejections": len(ep.guard_log),
         "guard_log": ep.guard_log,
         "residual_severe": [i for i in check(answer, ep.block_meta(), q["question"]) if i["kind"] in SEVERE],
