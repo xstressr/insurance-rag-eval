@@ -1,0 +1,45 @@
+{"writer": "gpt-6-luna", "rank": 0, "question": "我最近在看太保阿基米德（2025），它和泰康惠嘉保2026比起来，保障内容主要差在哪儿？", "scenario": "投保前比较", "max_sim_existing": 0.832}
+{"writer": "gpt-6-luna", "rank": 1, "question": "国寿康宁尊享（2024版）买的时候要做健康告知吗？以前体检有点异常，不太确定要不要说。", "scenario": "健康告知", "max_sim_existing": 0.823}
+{"writer": "gpt-6-luna", "rank": 2, "question": "太保阿基米德（2025）交了一段时间不想继续了，退保一般要怎么申请？", "scenario": "退保", "max_sim_existing": 0.82}
+{"writer": "gpt-6-luna", "rank": 3, "question": "泰康惠嘉保2026如果我最近手头紧，能不能申请保单借款？具体要看哪些条件？", "scenario": "保单借款", "max_sim_existing": 0.792}
+{"writer": "gpt-6-luna", "rank": 4, "question": "我买了国寿康宁尊享（2024版），换了手机号和住址，怎么把信息改过来？", "scenario": "信息变更", "max_sim_existing": 0.827}
+{"writer": "gpt-6-luna", "rank": 5, "question": "太保阿基米德（2025）的保费能不能自动扣？扣款账户没钱了会怎么样？", "scenario": "交费", "max_sim_existing": 0.809}
+{"writer": "gpt-6-luna", "rank": 6, "question": "买泰康惠嘉保2026之前，哪些情况算健康告知里需要说明的？我有些小毛病，不知道算不算。", "scenario": "健康告知", "max_sim_existing": 0.794}
+{"writer": "gpt-6-luna", "rank": 7, "question": "如果买了国寿康宁尊享（2024版）后确诊了，报案和申请理赔要准备什么材料？", "scenario": "出险理赔", "max_sim_existing": 0.746}
+{"writer": "gpt-6-luna", "rank": 8, "question": "家里人得了脑中风，怎么判断是不是条款里说的脑中风后遗症？", "scenario": "疾病定义", "max_sim_existing": 0.793}
+{"writer": "gpt-6-luna", "rank": 9, "question": "我给孩子投保太保阿基米德（2025），投保人和受益人能不能不是同一个人？", "scenario": "投保与受益人", "max_sim_existing": 0.776}
+{"writer": "gpt-6-luna", "rank": 10, "question": "泰康惠嘉保2026理赔申请交上去以后，通常可以从哪里查进度？", "scenario": "理赔进度", "max_sim_existing": 0.784}
+{"writer": "gpt-6-luna", "rank": 11, "question": "太保阿基米德（2025）和国寿康宁尊享（2024版）都能保哪些重大疾病？有重合的病种吗？", "scenario": "产品比较", "max_sim_existing": 0.775}
+{"writer": "gpt-6-luna", "rank": 12, "question": "买了国寿康宁尊享（2024版）之后，我还能把受益人改成家里其他人吗？", "scenario": "受益人变更", "max_sim_existing": 0.814}
+{"writer": "gpt-6-luna", "rank": 13, "question": "规范里说的“恶性肿瘤——重度”和“恶性肿瘤——轻度”是怎么区分的？", "scenario": "疾病定义", "max_sim_existing": 0.758}
+{"writer": "gpt-6-luna", "rank": 14, "question": "我想给爸妈买重大疾病保险，太保阿基米德（2025）、泰康惠嘉保2026和国寿康宁尊享（2024版）哪款更适合先了解？", "scenario": "投保前比较", "max_sim_existing": 0.81}
+{"writer": "kimi-k2.6", "rank": 0, "question": "你好，我想问一下那个太保的阿基米德2025，这种互联网上的重疾险靠谱吗？和线下买的保单法律效力一样不？", "scenario": "买之前比较和咨询", "max_sim_existing": 0.751}
+{"writer": "kimi-k2.6", "rank": 1, "question": "泰康惠嘉保2026如果买30万保额，每年大概要交多少钱啊？能保到终身吗？", "scenario": "买之前比较和咨询", "max_sim_existing": 0.922, "dropped": "与已有题目重复"}
+{"writer": "kimi-k2.6", "rank": 2, "question": "国寿康宁尊享2024和太保阿基米德2025，哪个对甲状腺癌更友好一些？我看网上说各家公司不太一样", "scenario": "买之前比较和咨询", "max_sim_existing": 0.719}
+{"writer": "kimi-k2.6", "rank": 3, "question": "我之前体检有乳腺结节二级，现在想买国寿康宁尊享2024，需要告诉保险公司吗？会不会以后乳腺方面的问题就不保了？", "scenario": "健康告知", "max_sim_existing": 0.733}
+{"writer": "kimi-k2.6", "rank": 4, "question": "我买了泰康惠嘉保2026，今年手头有点紧，能不能晚点交保费？最晚能拖多久啊？", "scenario": "买了以后交费/退保/借款/改信息", "max_sim_existing": 0.836}
+{"writer": "kimi-k2.6", "rank": 5, "question": "太保阿基米德才买了3个月，要是现在退保的话能退多少钱回来？是不是要亏很多？", "scenario": "买了以后交费/退保/借款/改信息", "max_sim_existing": 0.865}
+{"writer": "kimi-k2.6", "rank": 6, "question": "国寿康宁尊享2024的保单可以用来借钱吗？怎么操作，利息高不高？", "scenario": "买了以后交费/退保/借款/改信息", "max_sim_existing": 0.796}
+{"writer": "kimi-k2.6", "rank": 7, "question": "我换手机号码了，泰康惠嘉保2026在哪里改联系方式？不打客服电话能在手机上直接改吗？", "scenario": "买了以后交费/退保/借款/改信息", "max_sim_existing": 0.782}
+{"writer": "kimi-k2.6", "rank": 8, "question": "如果不幸确诊了肺癌，太保阿基米德2025怎么申请理赔？需要准备哪些材料？一般多久能到账？", "scenario": "生病或出险后理赔", "max_sim_existing": 0.784}
+{"writer": "kimi-k2.6", "rank": 9, "question": "我爸买了国寿康宁尊享2024，现在脑梗住院了还在治疗中，能不能先申请理赔？还是要等出院以后才能报？", "scenario": "生病或出险后理赔", "max_sim_existing": 0.9, "dropped": "与已有题目重复"}
+{"writer": "kimi-k2.6", "rank": 10, "question": "我是给我老婆买的泰康惠嘉保2026，受益人可以写我吗？以后如果理赔的话钱是打到谁的银行卡上？", "scenario": "家属或受益人的问题", "max_sim_existing": 0.805}
+{"writer": "kimi-k2.6", "rank": 11, "question": "如果被保人突然去世了，受益人怎么知道太保阿基米德2025能赔多少？家属需要去哪里查？", "scenario": "家属或受益人的问题", "max_sim_existing": 0.756}
+{"writer": "kimi-k2.6", "rank": 12, "question": "2020年重疾新规里说严重慢性肾衰竭要达到什么标准才能赔？是不是一定要透析90天以上？", "scenario": "疾病定义", "max_sim_existing": 0.699}
+{"writer": "kimi-k2.6", "rank": 13, "question": "这三款重疾产品，哪个有多次赔付啊？如果癌症复发的话能不能再赔一次？", "scenario": "买之前比较和咨询", "max_sim_existing": 0.678}
+{"writer": "kimi-k2.6", "rank": 14, "question": "轻微脑中风在国寿康宁尊享2024里算轻症还是中症？能不能赔？", "scenario": "生病或出险后理赔", "max_sim_existing": 0.751}
+{"writer": "omen-alpha", "rank": 0, "question": "太保那个阿基米德2025重疾险，轻症能赔几次啊？每次赔多少比例？", "scenario": "买前咨询", "max_sim_existing": 0.853}
+{"writer": "omen-alpha", "rank": 1, "question": "泰康惠嘉保2026和你们说的阿基米德比，哪个性价比高一点？我30岁女，预算一年一万左右", "scenario": "买前比较", "max_sim_existing": 0.757}
+{"writer": "omen-alpha", "rank": 2, "question": "国寿康宁尊享2024版能保到多少岁？可以选保终身吗？", "scenario": "买前咨询", "max_sim_existing": 0.802}
+{"writer": "omen-alpha", "rank": 3, "question": "我体检查出甲状腺结节2类，买泰康惠嘉保的话健康告知要怎么填？会不会被拒保？", "scenario": "健康告知", "max_sim_existing": 0.78}
+{"writer": "omen-alpha", "rank": 4, "question": "买重疾险之前要不要先去体检？还是直接如实告知就行？", "scenario": "健康告知", "max_sim_existing": 0.7}
+{"writer": "omen-alpha", "rank": 5, "question": "阿基米德这个交费期选20年还是30年好？中间手头紧交不上怎么办？", "scenario": "买前咨询", "max_sim_existing": 0.678}
+{"writer": "omen-alpha", "rank": 6, "question": "我去年买了康宁尊享，现在想换个手机号和地址，怎么改？", "scenario": "保全/改信息", "max_sim_existing": 0.796, "dropped": "与其他候选重复"}
+{"writer": "omen-alpha", "rank": 7, "question": "泰康惠嘉保交了两年了，现在不想交了，退保能退多少钱？会不会亏很多？", "scenario": "退保", "max_sim_existing": 0.869}
+{"writer": "omen-alpha", "rank": 8, "question": "重疾险的现金价值能贷款吗？利息多少？不还会怎么样？", "scenario": "保单借款", "max_sim_existing": 0.692}
+{"writer": "omen-alpha", "rank": 9, "question": "宽限期是多久？宽限期里出险了赔不赔？", "scenario": "交费问题", "max_sim_existing": 0.785}
+{"writer": "omen-alpha", "rank": 10, "question": "我爸买了阿基米德，上个月确诊了急性心梗，理赔要准备哪些材料？多久能到账？", "scenario": "理赔", "max_sim_existing": 0.724}
+{"writer": "omen-alpha", "rank": 11, "question": "原位癌算重疾还是轻症？2020年新规范里是怎么定义的？", "scenario": "疾病定义", "max_sim_existing": 0.777}
+{"writer": "omen-alpha", "rank": 12, "question": "新规范里的严重恶性肿瘤，甲状腺癌是不是都按轻症赔了？", "scenario": "疾病定义", "max_sim_existing": 0.83}
+{"writer": "omen-alpha", "rank": 13, "question": "我先生买了康宁尊享，受益人写的我，万一他出险了理赔款是打给谁？孩子能分到吗？", "scenario": "受益人问题", "max_sim_existing": 0.803}
+{"writer": "omen-alpha", "rank": 14, "question": "泰康惠嘉保、阿基米德、康宁尊享这三个，等待期分别是多少天？等待期内查出毛病怎么办？", "scenario": "买前比较", "max_sim_existing": 0.854}

@@ -23,3 +23,8 @@
 3. 按 `reports/decompose_v1_protocol.md` 的预测逐条核对。
 
 ## 执行记录（生成与筛选之后补记）
+
+- `gpt-6-luna` 不支持 chat 接口，自动改用 Responses 接口，temperature 为服务端默认值。
+- `longcat-2.0` 调用失败（APIConnectionError），按事先定好的替补换成 `kimi-k2.6`。kimi-k2.6 与 v3 的 kimi-k3 同一家族，出题风格可能接近 v3。`kimi-k2.6` 和 `omen-alpha` 用的是 chat 接口，temperature 为 0。三个模型的输出都已缓存。
+- 45 道候选题全部通过格式检查。丢掉 3 道：kimi-k2.6 两道与已有题目相似（0.922、0.900），omen-alpha 一道与其他候选相似（改手机号和地址）。
+- 按配额抽中 20 题：gpt-6-luna 7、kimi-k2.6 7、omen-alpha 6。
