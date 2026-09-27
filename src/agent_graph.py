@@ -31,6 +31,7 @@ from agent import (
     Episode,
     execute_calls,
     finalize,
+    llm_span,
     principal_of,
     system_prompt,
     text_answer,
@@ -57,6 +58,7 @@ def model_node(state: State, config: RunnableConfig) -> dict:
     forced = step > cfg["max_steps"]  # 步数用完：只留 final_answer 一个工具
     messages = state["messages"] + ([{"role": "user", "content": FORCE_ANSWER}] if forced else [])
     resp = cfg["llm"].chat_tools(messages, ANSWER_ONLY if forced else cfg["ep"].tools, cfg["session"])
+    cfg["ep"].trace.append(llm_span(step, resp))
     usage = {k: state["usage"][k] + resp["usage"][k] for k in state["usage"]}
     return {
         "messages": messages + [resp["message"]],

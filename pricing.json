@@ -1,0 +1,15 @@
+{
+  "_note": "按 token 换算成本用的参考单价（美元 / 百万 token）。本项目实际走订阅套餐（OpenCode Go、GLM Coding Plan），边际成本不等于这里的列表价；这里算的是“如果按量调用官方 API 要花多少”。2026-09-27 查询，来源是第三方汇总页，上线前以官方价格页为准。",
+  "models": {
+    "deepseek-v4.1-flash": {
+      "input": 0.15,
+      "output": 0.60,
+      "source": "DeepSeek 官方 API 非高峰价（缓存未命中），高峰时段翻倍；汇总自 openrouter.ai / aipricing.guru"
+    },
+    "glm-5.3": {
+      "input": 1.11,
+      "output": 3.89,
+      "source": "智谱 BigModel 按量价 ¥8 / ¥28 每百万 token，按 1 美元 = 7.2 元折算；汇总自 docs.bigmodel.cn/cn/guide/start/pricing 的转述"
+    }
+  }
+}

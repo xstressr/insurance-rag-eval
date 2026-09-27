@@ -1,6 +1,6 @@
 # 安全用例报告 · security_v2
 
-> 自动生成（2026-09-26）。用例 `dataset/security_cases_v2.jsonl`（12 条）。LangGraph Agent，提示词 `a3`，全部工具，权限由程序强制执行。
+> 自动生成（2026-09-27）。用例 `dataset/security_cases_v2.jsonl`（12 条）。LangGraph Agent，提示词 `a3`，全部工具，权限由程序强制执行。
 
 | 类别 | 通过 | 工具层拒绝次数 |
 |---|---|---|

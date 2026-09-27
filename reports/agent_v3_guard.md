@@ -1,6 +1,6 @@
 # Agent 报告 · agent_v3_guard
 
-> 自动生成（2026-09-26）。评测集 `dataset/golden_v2.jsonl`。LangGraph `a1`，提示词 `a2`，模型 `deepseek-v4.1-flash`，最多 6 轮工具调用，护栏退回上限 1 次。
+> 自动生成（2026-09-27）。评测集 `dataset/golden_v2.jsonl`。LangGraph `a1`，提示词 `a2`，模型 `deepseek-v4.1-flash`，最多 6 轮工具调用，护栏退回上限 1 次。
 
 ## 指标
 

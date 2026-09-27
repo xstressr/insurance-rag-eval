@@ -1,6 +1,6 @@
 # 评委报告 · gen_v3_p2
 
-> 自动生成（2026-09-26）。评委 `glm-5.3`（JUDGE_* 配置，max 思考强度），评委提示词 `j2`（`src/judge.py`）；被评的答案来自 `reports/runs/gen_v3_p2.jsonl`。
+> 自动生成（2026-09-27）。评委 `glm-5.3`（JUDGE_* 配置，max 思考强度），评委提示词 `j2`（`src/judge.py`）；被评的答案来自 `reports/runs/gen_v3_p2.jsonl`。
 
 ## 总体
 

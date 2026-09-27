@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import time
 import urllib.request
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -234,6 +235,7 @@ class Episode:
         self.guard_log: list[dict] = []
         self.blocks: list[dict] = []  # {"cid", "chunk_ids"}，与 answer.py 的 context 格式一致
         self.seen_calls: dict[str, str] = {}
+        self.trace: list[dict] = []  # 每次模型调用和工具调用一条记录：耗时、token、是否命中缓存、是否出错
 
     def block_meta(self) -> dict[str, tuple[str, set[str]]]:
         """{Cn: (片段全文, 所属文档)}，给引用校验用。计算工具的结果也是可引用的块，文档记为 tool。"""
@@ -384,6 +386,7 @@ def execute_calls(
     本次提交不算数。强制作答轮（allow_guard=False）不启用，避免拿不到任何答案。"""
     tool_msgs, final = [], None
     for call in calls:
+        t0 = time.perf_counter()
         name, raw = call["function"]["name"], call["function"]["arguments"]
         targs, err = validate(name, raw, ep.tools)
         sig = f"{name}:{json.dumps(targs, ensure_ascii=False, sort_keys=True)}" if targs else None
@@ -413,6 +416,9 @@ def execute_calls(
             if not result.startswith("错误"):
                 ep.seen_calls[sig] = f"{first_cid} 起的结果"
         trajectory.append({"step": step, "tool": name, "args": targs if targs else raw, "error": err, "result_head": result[:120]})
+        ep.trace.append(
+            {"step": step, "kind": "tool", "name": name, "ms": round((time.perf_counter() - t0) * 1000, 1), "error": bool(err) or result.startswith("错误")}
+        )
         tool_msgs.append({"role": "tool", "tool_call_id": call["id"], "content": result})
     return tool_msgs, final
 
@@ -421,6 +427,18 @@ def text_answer(msg: dict) -> dict:
     """模型没调用工具、直接输出文字时，当作最终答案解析。"""
     parsed = parse_json(msg["content"])
     return {"answer": parsed["answer"] if parsed else msg["content"], "answerable": parsed.get("answerable") if parsed else None}
+
+
+def llm_span(step: int, resp: dict) -> dict:
+    """模型调用的追踪记录。命中缓存时 seconds 是当初真实调用的耗时（缓存里存着），所以回放也能统计延迟。"""
+    return {
+        "step": step,
+        "kind": "llm",
+        "seconds": resp["seconds"],
+        "cached": resp["cached"],
+        "usage": resp["usage"],
+        "finish_reason": resp["finish_reason"],
+    }
 
 
 def principal_of(q: dict) -> Principal:
@@ -445,6 +463,7 @@ def run_episode(q: dict, corpus: Corpus, llm: LLM, args: argparse.Namespace) -> 
         if final_round:  # 步数用完：只留 final_answer 一个工具
             messages.append({"role": "user", "content": FORCE_ANSWER})
         resp = llm.chat_tools(messages, ANSWER_ONLY if final_round else ep.tools, session)
+        ep.trace.append(llm_span(step, resp))
         cached_all &= resp["cached"]
         for k in usage:
             usage[k] += resp["usage"][k]
@@ -500,7 +519,10 @@ def finalize(q: dict, ep: Episode, final: dict | None, stop: str, trajectory: li
         "must_include": q["must_include"],
         "must_not_include_hits": [s for s in q.get("must_not_include", []) if s in answer],
         "usage": usage,
-        "seconds": None,
+        # 端到端延迟 = 各次模型调用的原始耗时 + 工具耗时（本地检索、计算）
+        "seconds": round(sum(s.get("seconds", 0) for s in ep.trace) + sum(s.get("ms", 0) for s in ep.trace) / 1000, 1),
+        "llm_calls": sum(s["kind"] == "llm" for s in ep.trace),
+        "trace": ep.trace,
         "cached": cached_all,
         "stop": stop,
         "steps": len({t["step"] for t in trajectory}),

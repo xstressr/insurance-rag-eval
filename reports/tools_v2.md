@@ -1,6 +1,6 @@
 # 工具任务报告 · tools_v2
 
-> 自动生成（2026-09-26）。任务 `dataset/tool_tasks_v1.jsonl`（10 题，标准答案人工推算）。LangGraph Agent，提示词 `a3`，全部工具，最多 8 轮，护栏退回上限 1。
+> 自动生成（2026-09-27）。任务 `dataset/tool_tasks_v1.jsonl`（10 题，标准答案人工推算）。LangGraph Agent，提示词 `a3`，全部工具，最多 8 轮，护栏退回上限 1。
 
 | 指标 | 值 |
 |---|---|

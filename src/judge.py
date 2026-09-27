@@ -109,6 +109,7 @@ def judge_one(
         "reason": v.get("reason", "") if ok else resp["content"][:300],
         "parse_ok": ok,
         "usage": resp["usage"],
+        "seconds": resp["seconds"],
         "cached": resp["cached"],
     }
 
