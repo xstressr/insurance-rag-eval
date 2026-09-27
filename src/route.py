@@ -53,6 +53,8 @@ SCORE = {"correct": 2, "partial": 1, "incorrect": 0}
 SETS = {
     "dev": [("golden_v2", "gen_v3_p2", "agent_v3_guard"), ("golden_blind_v1", "gen_v3_p2_blind", "agent_v3_guard_blind")],
     "v2.1+v3": [("golden_blind_v2.1", "gen_v3_p2_blind2_1", "agent_v3_guard_blind2_1"), ("golden_blind_v3", "gen_v3_p2_blind3", "agent_v3_guard_blind3")],
+    # 独立检验集：路由 v1、v2 的规则都在它生成前提交（只加数据，不改规则）
+    "v5": [("golden_blind_v5", "gen_v3_p2_blind5", "agent_v3_guard_blind5")],
 }
 
 

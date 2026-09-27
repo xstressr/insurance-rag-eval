@@ -24,6 +24,8 @@ DEFAULT_RUNS = [
     ("Agent a2 + 护栏 · blind_v2", "agent_v3_guard_blind2"),
     ("单次 RAG · blind_v3", "gen_v3_p2_blind3"),
     ("Agent a2 + 护栏 · blind_v3", "agent_v3_guard_blind3"),
+    ("单次 RAG · blind_v5", "gen_v3_p2_blind5"),
+    ("Agent a2 + 护栏 · blind_v5", "agent_v3_guard_blind5"),
     ("Agent a3 + 计算工具 · 工具任务", "tools_v2"),
     ("Agent a3 + 权限 · 安全用例", "security_v2"),
 ]
