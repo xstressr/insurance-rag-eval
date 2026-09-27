@@ -34,6 +34,10 @@ CONFIGS = {
            "existing": _BASE, "prefix": "d", "protocol": "dataset/blind_v3_protocol.md"},
     "v5": {"writers": ["mimo-v2.6-pro", "hy3", "grok-4.7"], "quota": [7, 7, 6], "seed": 2026092705,
            "existing": _BASE + ["golden_blind_v3.jsonl"], "prefix": "e", "protocol": "dataset/blind_v5_protocol.md"},
+    # v6：检验拆子问题（reports/decompose_v1_protocol.md）。某个模型调用失败或合格题不足 10 道，就换成 fallback，写入协议执行记录
+    "v6": {"writers": ["gpt-6-luna", "longcat-2.0", "omen-alpha"], "quota": [7, 7, 6], "seed": 2026092706,
+           "existing": _BASE + ["golden_blind_v3.jsonl", "golden_blind_v5.jsonl"], "prefix": "f",
+           "protocol": "dataset/blind_v6_protocol.md", "fallback": "kimi-k2.6"},
 }
 
 
@@ -108,21 +112,39 @@ def chat_responses(llm: LLM, system: str, user: str, session: str) -> dict:
     return {**out, "cached": False}
 
 
+def ask(w: str) -> list[dict]:
+    llm = LLM(None, model=w)
+    session = str(uuid.uuid5(uuid.NAMESPACE_URL, f"insurance-rag-eval/blind_{SET}/{w}"))
+    call = chat_responses if w in RESPONSES_ONLY else LLM.chat
+    try:
+        resp = call(llm, "你是一名普通的保险消费者。", WRITER_PROMPT.format(n=PER_WRITER), session)
+    except BadRequestError as e:  # 有的模型只支持 Responses 接口
+        if "ModelProtocolUnsupported" not in str(e):
+            raise
+        print(f"{w}: chat 接口不支持，改用 Responses 接口（temperature 为服务端默认值）")
+        resp = chat_responses(llm, "你是一名普通的保险消费者。", WRITER_PROMPT.format(n=PER_WRITER), session)
+    items = parse_array(resp["content"])
+    print(f"{w}: {len(items)} 题，cached={resp['cached']}，{resp['usage']}")
+    return items
+
+
 def generate() -> None:
+    global WRITERS, QUOTA
     rows = []
-    for w in WRITERS:
-        llm = LLM(None, model=w)
-        session = str(uuid.uuid5(uuid.NAMESPACE_URL, f"insurance-rag-eval/blind_{SET}/{w}"))
-        call = chat_responses if w in RESPONSES_ONLY else LLM.chat
+    fallback = CONFIGS[SET].get("fallback")
+    for w in list(WRITERS):
         try:
-            resp = call(llm, "你是一名普通的保险消费者。", WRITER_PROMPT.format(n=PER_WRITER), session)
-        except BadRequestError as e:  # 有的模型只支持 Responses 接口
-            if "ModelProtocolUnsupported" not in str(e):
+            items = ask(w)
+        except Exception as e:  # noqa: BLE001  只有配了 fallback 的批次才吞掉错误
+            if not fallback:
                 raise
-            print(f"{w}: chat 接口不支持，改用 Responses 接口（temperature 为服务端默认值）")
-            resp = chat_responses(llm, "你是一名普通的保险消费者。", WRITER_PROMPT.format(n=PER_WRITER), session)
-        items = parse_array(resp["content"])
-        print(f"{w}: {len(items)} 题，cached={resp['cached']}，{resp['usage']}")
+            print(f"{w}: 调用失败（{type(e).__name__}）")
+            items = []
+        if fallback and len(items) < 10:
+            print(f"{w}: 合格题不足 10 道，按协议换成 {fallback}")
+            QUOTA[fallback] = QUOTA.pop(w)
+            WRITERS[WRITERS.index(w)] = fallback
+            w, items, fallback = fallback, ask(fallback), None  # 只替换一次
         rows += [{"writer": w, "rank": i, "question": x["question"].strip(), "scenario": x.get("scenario", "")} for i, x in enumerate(items)]
     with CANDIDATES.open("w", encoding="utf-8", newline="\n") as f:
         for r in rows:
@@ -130,7 +152,11 @@ def generate() -> None:
 
 
 def select() -> None:
+    global WRITERS, QUOTA
     cands = load_jsonl(CANDIDATES)
+    # 以候选文件里实际出题的模型为准（生成时可能按协议换成了 fallback）；v3、v5 与配置顺序相同，结果不变
+    WRITERS = list(dict.fromkeys(c["writer"] for c in cands))
+    QUOTA = dict(zip(WRITERS, CONFIGS[SET]["quota"]))
     existing = [q["question"] for name in EXISTING for q in load_jsonl(DATASET / name)]
     ok = [c for c in cands if 6 <= len(c["question"]) <= 120 and re.search(r"[一-鿿]", c["question"])]
     vc, ve = embed([c["question"] for c in ok]), embed(existing)

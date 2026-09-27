@@ -4,6 +4,8 @@
     uv run python src/answer.py --run-name gen_v3_p2 --golden golden_v2.jsonl   # 默认：expand=1、预算 8000、提示词 p2
     uv run python src/answer.py --run-name gen_v1 --expand 0 --char-budget 4000 --prompt p1   # 复现 gen_v1
     uv run python src/answer.py --run-name gen_v3_p2_blind --golden golden_blind_v1.jsonl --emb bge-m3_index_text_blind
+    uv run python src/answer.py --run-name gen_v4_d2_blind5 --golden golden_blind_v5.jsonl --emb bge-m3_index_text_blind5 --decompose d2 --sub-k 5
+      # 拆子问题（多查询检索），需要 embed_server 在跑；协议见 reports/decompose_v1_protocol.md
 
 模型配置读项目根目录的 .env（LLM_BASE_URL / LLM_API_KEY / LLM_MODEL），key 不打印、不落盘。
 同一个模型 + 同一份提示词的响应缓存在 data/processed/llm_cache/，重跑评测不重复花钱。
@@ -20,6 +22,7 @@ import json
 import os
 import re
 import time
+import urllib.request
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
@@ -35,6 +38,7 @@ from evaluate import CHUNKS, EMB_DIR, GOLDEN, REPORTS, ROOT, SHORT, Retriever, d
 CACHE = ROOT / "data" / "processed" / "llm_cache"
 USER_AGENT = "insurance-rag-eval/0.1"
 REFUSAL = "根据提供的条款无法回答"
+EMBED_URL = os.environ.get("EMBED_URL", "http://127.0.0.1:8765/embed")
 
 PRODUCT_NAME = {
     "cpic_archimedes_2025": "太保阿基米德（2025）重大疾病保险",
@@ -76,12 +80,68 @@ PROMPTS = {
 }
 
 
-def build_context(chunks: list[dict], order: list[int], k: int, char_budget: int, expand: int = 0) -> list[dict]:
+# 拆子问题（多查询检索）：一次不带思考的调用把问题拆成检索用的子问题。
+# 只拆出 1 个时，检索和生成与不拆完全相同（生成调用命中同一份缓存）。
+DECOMPOSE_PROMPTS = {
+    "d1": """你为保险条款检索系统拆分用户问题。用户的一句话里常常连问好几件事，一次检索只能找到其中一件的条款。
+
+规则：
+1. 问题只问一件事时，只输出一个子问题，照抄原问题。
+2. 问题问了几件需要分别查条款的事，就拆成几个子问题，最多 4 个。
+3. 每个子问题要能单独拿去检索：带上产品名（原问题提到的话）和主语，尽量用条款里的说法（如“等待期”“宽限期”“现金价值”“受益人”“保单贷款”“责任免除”）。
+4. 对比几款产品的同一件事，按产品各拆一个子问题。
+5. 不要添加原问题没有问的事。
+
+只输出 JSON：{"subquestions": ["子问题1", "子问题2"]}""",
+    # d2：d1 拆出的子问题仍是口语，检索不到第二条条款（开发集 v3、v5 的多证据题）。
+    # 改成像 Agent 那样写关键词式的检索词，并允许补查答案依赖的相关条款。
+    "d2": """你为保险条款检索系统写检索词。条款按条组织，常见条款有：保险责任、责任免除、等待期、疾病定义（重度 / 中度 / 轻度）、
+保险期间、投保年龄、保险费的交纳与宽限期、合同效力中止与恢复、犹豫期、解除合同与现金价值、保单贷款、受益人、
+保险事故通知、保险金申请所需证明和资料、保险金的申请与给付、未还款项、争议处理、合同内容变更。
+
+规则：
+1. 找出回答问题需要查的每一条条款，每条写一个检索词，最多 4 个。只问一件事、一条条款就能回答时，只写 1 个。
+2. 检索词写成关键词，用条款里的说法，不用口语。例如“能保到多大岁数”写成“保险期间 保障期限”，“贷款后生病赔付有没有影响”写成“保险金给付 扣除 未还贷款本息”。
+3. 答案还依赖别的条款时也要查：问能不能赔某种病，要查这种病的疾病定义，并查有没有较轻一档（中度 / 轻度）；问理赔或给付，要查申请与给付条款。
+4. 对比几款产品时，每款产品各写一个检索词，并写上产品名。
+5. 原问题提到产品名时，每个检索词都带上产品名。
+
+只输出 JSON：{"subquestions": ["检索词1", "检索词2"]}""",
+}
+NO_THINKING = {"thinking": {"type": "disabled"}}
+# 至少拆出几个子问题才走多查询检索。d1 拆出 1 个时照抄原问题，不必再检索；d2 的 1 个检索词也是改写过的，要用。
+SPLIT_MIN = {"d1": 2, "d2": 1}
+
+
+def parse_subquestions(text: str) -> list[str]:
+    m = re.search(r"\{.*\}", text, re.S)
+    try:
+        subs = json.loads(m.group(0))["subquestions"] if m else []
+    except (json.JSONDecodeError, KeyError, TypeError):
+        subs = []
+    return [s.strip() for s in subs if isinstance(s, str) and s.strip()][:4]
+
+
+def merge_seeds(orders: list[list[int]], ks: list[int]) -> list[int]:
+    """轮流从每个排序里取下一名，去重；第 i 个排序最多取 ks[i] 个。原问题的排序放第一个。"""
+    seeds, seen = [], set()
+    for r in range(max(ks)):
+        for order, k in zip(orders, ks):
+            if r < k and r < len(order) and order[r] not in seen:
+                seen.add(order[r])
+                seeds.append(order[r])
+    return seeds
+
+
+def build_context(
+    chunks: list[dict], order: list[int], k: int, char_budget: int, expand: int = 0, whole_clause_max: int = 0
+) -> list[dict]:
     """按检索名次取前 k 个“种子块”组装上下文，编号 C1..Cn 与名次一致。
 
     expand=0：每个种子块单独成段（gen_v1 的做法），去掉正文重复的块。
     expand=N：small-to-big。条款过长会被切成多块，命中的那一块不一定含答案，
       所以把同一条款里种子块前后各 N 块一起带上，同一条款的块合并成一段、按原文顺序排列。
+    whole_clause_max>0（需 expand>0）：整条条款不超过这么多字时，带上整条条款，而不只是前后 N 块。
     超出字数预算就停止（第一段总会放进去）。
     """
     siblings: dict[tuple, dict[int, int]] = {}
@@ -95,6 +155,8 @@ def build_context(chunks: list[dict], order: list[int], k: int, char_budget: int
         c = chunks[i]
         key = (c["doc_id"], c["part"], c["clause_id"])
         lo, hi = c["sub_index"] - expand, c["sub_index"] + expand
+        if expand and whole_clause_max and sum(chunks[j]["n_chars"] for j in siblings[key].values()) <= whole_clause_max:
+            lo, hi = min(siblings[key]), max(siblings[key])  # 条款不长就整条带上，和 Agent 的 read_clause 一样
         want = [siblings[key][j] for j in range(lo, hi + 1) if j in siblings[key]]
         block = by_clause.get(key) if expand else None
         new = [j for j in want if chunks[j]["text"] not in seen_text and (block is None or j not in block["idxs"])]
@@ -288,16 +350,57 @@ class LLM:
         return {**out, "cached": False}
 
 
-def run_one(q: dict, qi: int, chunks: list[dict], retriever: Retriever, llm: LLM, args: argparse.Namespace) -> dict:
+def embed_query(text: str) -> np.ndarray:
+    """子问题的向量现算（原问题的向量是预先算好的）。需要 embed_server 在跑。"""
+    req = urllib.request.Request(
+        EMBED_URL, data=json.dumps({"texts": [text]}).encode(), headers={"Content-Type": "application/json"}
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return np.array(json.load(resp)["vectors"][0], dtype=np.float32)
+
+
+def retrieve(
+    q: dict, qi: int, chunks: list[dict], retriever: Retriever, args: argparse.Namespace, session: str, splitter: LLM | None = None
+) -> tuple[list[dict], str, list[str], dict | None]:
+    """检索并组装上下文。返回 (上下文块, 发给生成模型的用户消息, 子问题, 拆分调用的响应)。"""
     order, _ = retriever.rank(qi, tokenize(q["question"]))
     products = detect_products(q["question"])
     if products:
         order = [i for i in order if chunks[i]["doc_id"] in products]
-    seeds = select_seeds(chunks, order, products, args.k, args.quota, args.neighbors)
-    ctx = build_context(chunks, seeds, len(seeds), args.char_budget, args.expand)
-    user = f"【条款片段】\n{render_context(chunks, ctx)}\n\n【问题】\n{q['question']}"
+
+    subs, split = [], None
+    if splitter:
+        split = splitter.chat(DECOMPOSE_PROMPTS[args.decompose], q["question"], session + "/split")
+        subs = parse_subquestions(split["content"])
+    if len(subs) >= SPLIT_MIN.get(args.decompose, 2):
+        orders = [order]
+        for s in subs:
+            docs = detect_products(s) or products
+            cos = retriever.chunk_vecs @ embed_query(s)
+            orders.append([i for i in sorted(range(len(chunks)), key=lambda i: (-cos[i], i)) if not docs or chunks[i]["doc_id"] in docs])
+        seeds = merge_seeds(orders, [args.k] + [args.sub_k] * len(subs))
+        ctx = build_context(chunks, seeds, len(seeds), args.split_budget, args.expand, args.whole_clause)
+        user = f"【条款片段】\n{render_context(chunks, ctx)}\n\n【问题】\n{q['question']}"
+        if args.decompose == "d1":  # d1 的子问题是问句，交给生成模型逐一回答；d2 是检索词，不给
+            listing = "\n".join(f"{n}. {s}" for n, s in enumerate(subs, 1))
+            user += f"\n\n【问题拆分】（请逐一回答）\n{listing}"
+    else:
+        seeds = select_seeds(chunks, order, products, args.k, args.quota, args.neighbors)
+        ctx = build_context(chunks, seeds, len(seeds), args.char_budget, args.expand, args.whole_clause)
+        user = f"【条款片段】\n{render_context(chunks, ctx)}\n\n【问题】\n{q['question']}"
+    return ctx, user, subs, split
+
+
+def run_one(
+    q: dict, qi: int, chunks: list[dict], retriever: Retriever, llm: LLM, args: argparse.Namespace, splitter: LLM | None = None
+) -> dict:
     session = str(uuid.uuid5(uuid.NAMESPACE_URL, f"insurance-rag-eval/{args.run_name}/{q['id']}"))
+    ctx, user, subs, split = retrieve(q, qi, chunks, retriever, args, session, splitter)
     resp = llm.chat(PROMPTS[args.prompt], user, session)
+    usage, seconds, cached = dict(resp["usage"]), resp["seconds"], resp["cached"]
+    if split:  # 拆分调用的 token 和耗时计入这道题
+        usage = {k: usage[k] + split["usage"][k] for k in usage}
+        seconds, cached = seconds + split["seconds"], cached and split["cached"]
 
     parsed = parse_json(resp["content"])
     answer = parsed["answer"] if parsed else resp["content"]
@@ -326,9 +429,11 @@ def run_one(q: dict, qi: int, chunks: list[dict], retriever: Retriever, llm: LLM
         "cited_relevant": [c for c in cited if c in relevant_cids],
         "must_include": q["must_include"],
         "must_not_include_hits": [s for s in q.get("must_not_include", []) if s in answer],
-        "usage": resp["usage"],
-        "seconds": resp["seconds"],
-        "cached": resp["cached"],
+        "subquestions": subs,
+        "split_usage": split["usage"] if split else None,
+        "usage": usage,
+        "seconds": seconds,
+        "cached": cached,
     }
 
 
@@ -364,6 +469,11 @@ def summarize(rows: list[dict]) -> dict:
 
 def write_report(rows: list[dict], s: dict, args: argparse.Namespace, llm: LLM, n_chunks: int) -> Path:
     pct = lambda x: f"{x:.1%}"  # noqa: E731
+    n_split = sum(len(r["subquestions"]) >= 2 for r in rows)
+    split_desc = "关" if not args.decompose else (
+        f"`{args.decompose}`（不带思考）；拆成 2 个及以上时，原问题前 {args.k} 块与每个子问题前 {args.sub_k} 块轮流合并，"
+        f"字数预算 {args.split_budget}；拆开的题 {n_split} / {len(rows)}"
+    )
     lines = [
         f"# 生成评测报告 · {args.run_name}",
         "",
@@ -378,6 +488,8 @@ def write_report(rows: list[dict], s: dict, args: argparse.Namespace, llm: LLM, 
         f"| 检索 | 向量检索 bge-m3（`{args.emb}`）{'+ 重排 bge-reranker-v2-m3（前 ' + str(args.rerank_top) + ' 名）' if args.rerank else ''} + 产品过滤，文本块 {n_chunks} 个 |",
         f"| 种子 | 前 {args.k} 块；对比题按产品分配 {args.quota or '关'}；相邻条款 {args.neighbors or '关'} |",
         f"| 上下文 | 前 {args.k} 个种子块，{'同条款前后各扩展 ' + str(args.expand) + ' 块，' if args.expand else ''}去重，字数预算 {args.char_budget} |",
+        f"| 整条条款 | {'条款不超过 ' + str(args.whole_clause) + ' 字就整条带上' if args.whole_clause else '关'} |",
+        f"| 拆子问题 | {split_desc} |",
         "",
         "## 指标",
         "",
@@ -423,6 +535,10 @@ def main() -> None:
     ap.add_argument("--rerank-top", type=int, default=20, help="向量检索前多少名进入重排")
     ap.add_argument("--quota", type=int, default=0, help="对比题每个产品各取几块，0 = 不分配")
     ap.add_argument("--neighbors", type=int, default=0, help="对前 N 个种子块带上相邻条款，0 = 不带")
+    ap.add_argument("--decompose", default=None, choices=sorted(DECOMPOSE_PROMPTS), help="先拆子问题再多查询检索；不设 = 不拆")
+    ap.add_argument("--sub-k", type=int, default=3, help="拆分后每个子问题取前几块")
+    ap.add_argument("--split-budget", type=int, default=12000, help="拆成 2 个及以上子问题时的上下文字数预算")
+    ap.add_argument("--whole-clause", type=int, default=0, help="条款不超过这么多字就整条带上；0 = 关（只带前后 expand 块）")
     ap.add_argument("--max-tokens", type=int, default=None, help="不设则用模型自己的最大输出上限")
     ap.add_argument("--workers", type=int, default=3)
     ap.add_argument("--limit", type=int, default=None, help="只跑前 N 题，用于冒烟测试")
@@ -448,10 +564,11 @@ def main() -> None:
         rerank_scores=rerank_scores, rerank_top=args.rerank_top,
     )
     llm = LLM(args.max_tokens)
+    splitter = LLM(None, extra_body=NO_THINKING) if args.decompose else None
 
     todo = list(enumerate(golden))[: args.limit]
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        rows = list(pool.map(lambda p: run_one(p[1], p[0], chunks, retriever, llm, args), todo))
+        rows = list(pool.map(lambda p: run_one(p[1], p[0], chunks, retriever, llm, args, splitter), todo))
 
     (REPORTS / "runs").mkdir(parents=True, exist_ok=True)
     with (REPORTS / "runs" / f"{args.run_name}.jsonl").open("w", encoding="utf-8", newline="\n") as f:
