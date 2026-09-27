@@ -9,10 +9,12 @@ x-app: &app
   environment:
     EMBED_URL: http://embed-server:8765/embed
 
+# 已经下载过 bge-m3 的话，设 BGE_M3_HOST_DIR=<本机模型目录>，挂载进容器，免去 2.3GB 下载；
+# 不设则 BGE_M3_DIR 为空，程序从 Hugging Face 下载 BAAI/bge-m3 到 hf-cache 卷。
 x-embed: &embed
   build: { context: ., dockerfile: docker/embed.Dockerfile }
   image: insurance-rag-eval:embed
-  volumes: [".:/app", "hf-cache:/hf-cache"]
+  volumes: [".:/app", "hf-cache:/hf-cache", "${BGE_M3_HOST_DIR:-./docker/no-model}:/models/bge-m3:ro"]
 
 services:
   app:                      # docker compose run --rm app [offline|data|dense-eval]
@@ -23,6 +25,8 @@ services:
   embed:                    # docker compose --profile embed run --rm embed
     <<: *embed
     profiles: ["embed"]
+    environment:
+      BGE_M3_DIR: ${BGE_M3_HOST_DIR:+/models/bge-m3}
     command: ["sh", "scripts/reproduce.sh", "dense"]
 
   embed-server:
@@ -30,6 +34,7 @@ services:
     profiles: ["llm"]
     environment:
       EMBED_HOST: 0.0.0.0
+      BGE_M3_DIR: ${BGE_M3_HOST_DIR:+/models/bge-m3}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=5)"]
       interval: 10s

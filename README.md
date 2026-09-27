@@ -71,7 +71,7 @@ docker compose run --rm app data
 docker compose --profile embed run --rm embed
 ```
 
-这一级在 CPU 上计算 bge-m3 向量。第一次运行会下载约 2.3GB 的模型，存到 `hf-cache` 卷里。算完向量后，再运行下面的命令做向量检索评测：
+这一级在 CPU 上计算 bge-m3 向量。第一次运行会下载约 2.3GB 的模型，存到 `hf-cache` 卷里。本机已经有模型的话，设环境变量 `BGE_M3_HOST_DIR=<模型目录>`，把目录挂载进容器，就不用再下载。CPU 和 GPU 算出的向量有微小的浮点差异，个别题的排名可能不同。算完向量后，再运行下面的命令做向量检索评测：
 
 ```bash
 docker compose run --rm app dense-eval

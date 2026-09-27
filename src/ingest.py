@@ -268,7 +268,8 @@ def main() -> None:
         )
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    with OUT.open("w", encoding="utf-8") as f:
+    # 固定 LF：Windows 和 Linux 的输出逐字节相同，复现脚本可以直接比对哈希
+    with OUT.open("w", encoding="utf-8", newline="\n") as f:
         for c in all_chunks:
             f.write(json.dumps(c, ensure_ascii=False) + "\n")
     print(f"wrote {len(all_chunks)} chunks -> {OUT.relative_to(ROOT)}")

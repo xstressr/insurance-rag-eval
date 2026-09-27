@@ -10,7 +10,7 @@
 set -eu
 cd "$(dirname "$0")/.."
 PY=${PY:-python}
-CHUNKS_SHA=3095e1d9d63354fb32bcebd4840676576c27cd532c1357bc221733c0b7d6e527
+CHUNKS_SHA=df7f823593b313e1cf236c8c18a7f4377fd62f123a991871dea1a157dfbe8bb7
 BM25="--retriever bm25 --product-filter --tokenizer search --terms insurance_terms_v2.txt"
 DENSE="--retriever dense --product-filter --tokenizer search --terms insurance_terms_v2.txt"
 
