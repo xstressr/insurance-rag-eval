@@ -37,7 +37,7 @@
 
 ## 工程
 
-- [ ] Docker 镜像只做了配置校验（`docker compose config`），还没有实际构建和端到端跑过：构建要拉基础镜像、PyPI 依赖和 CPU 版 PyTorch，需要单独授权。
+- [ ] Docker 的 llm 这一级没有在容器里跑过。2026-09-27 已构建镜像（app 729MB，embed 1.87GB），offline、data、dense、dense-eval 四级在容器里都通过了。CPU 向量与 GPU 的最大偏差约 1e-5，四个集合的汇总指标完全一致，但 dense_v2_golden_v2 有 1 题的逐题记录不同；用 GPU 向量在容器里重跑，与提交的结果逐字节相同。llm 这一级在容器里用 CPU 算查询向量，Agent 检索结果可能与缓存对不上，会产生少量真实调用，所以还没跑。
 - [ ] 工程目录：CLAUDE.md 约定 Windows 工程放在 `D:\Projects\xstress\<repo>`，本项目目前在 `D:\Projects\insurance-rag-eval`。
 - [ ] 每个配置只跑一次；重要结论要跑 3 次看波动。
 - [ ] 接口失败与重试次数没有记录（客户端自动重试 2 次，仍失败就中断整次运行）；延迟长尾 24～35 秒疑似服务端排队，需要记录重试后才能确认（见 `reports/ops_v1_summary.md`）。
