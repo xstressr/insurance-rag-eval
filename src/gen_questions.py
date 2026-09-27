@@ -9,7 +9,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import time
 import random
 import re
 import urllib.request
@@ -18,7 +20,7 @@ import uuid
 import numpy as np
 
 from agent import EMBED_URL
-from answer import LLM
+from answer import CACHE, LLM
 from evaluate import ROOT, load_jsonl
 
 DATASET = ROOT / "dataset"
@@ -27,6 +29,7 @@ OUT = DATASET / "golden_blind_v3.jsonl"
 WRITERS = ["kimi-k3", "qwen3.8-max", "muse-spark-1.3-contributor"]  # 顺序也是去重和补足的顺序
 QUOTA = {"kimi-k3": 7, "qwen3.8-max": 7, "muse-spark-1.3-contributor": 6}
 PER_WRITER, SEED, SIM = 15, 20260927, 0.90
+RESPONSES_ONLY = {"muse-spark-1.3-contributor"}  # OpenCode 上这个模型只支持 Responses 接口
 EXISTING = ["golden_v2.jsonl", "golden_blind_v1.jsonl", "golden_blind_v2.jsonl", "tool_tasks_v1.jsonl", "security_cases_v2.jsonl"]
 
 WRITER_PROMPT = """你在帮忙测试一个“保险条款问答助手”。助手能查阅下面三款重大疾病保险的条款原文，以及中国保险行业协会的《重大疾病保险的疾病定义使用规范（2020年修订版）》：
@@ -63,12 +66,38 @@ def parse_array(text: str) -> list[dict]:
     return [x for x in items if isinstance(x, dict) and isinstance(x.get("question"), str)]
 
 
+def chat_responses(llm: LLM, system: str, user: str, session: str) -> dict:
+    """Responses 接口版的 LLM.chat：同样缓存到 llm_cache，缓存键加上接口名。"""
+    key = hashlib.sha256(json.dumps(["responses", llm.model, system, user], ensure_ascii=False).encode()).hexdigest()[:24]
+    path = CACHE / f"{key}.json"
+    if path.exists():
+        return {**json.loads(path.read_text(encoding="utf-8")), "cached": True}
+    t0 = time.time()
+    resp = llm.client.responses.create(
+        model=llm.model, instructions=system, input=user, extra_headers={"x-opencode-session": session}
+    )
+    u = resp.usage
+    details = getattr(u, "output_tokens_details", None)
+    out = {
+        "content": resp.output_text or "",
+        "finish_reason": resp.status,
+        "model": resp.model,
+        "usage": {"prompt": u.input_tokens, "completion": u.output_tokens, "reasoning": getattr(details, "reasoning_tokens", 0) or 0},
+        "seconds": round(time.time() - t0, 1),
+    }
+    if resp.status == "completed":
+        CACHE.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
+    return {**out, "cached": False}
+
+
 def generate() -> None:
     rows = []
     for w in WRITERS:
         llm = LLM(None, model=w)
         session = str(uuid.uuid5(uuid.NAMESPACE_URL, f"insurance-rag-eval/blind_v3/{w}"))
-        resp = llm.chat("你是一名普通的保险消费者。", WRITER_PROMPT.format(n=PER_WRITER), session)
+        call = chat_responses if w in RESPONSES_ONLY else LLM.chat
+        resp = call(llm, "你是一名普通的保险消费者。", WRITER_PROMPT.format(n=PER_WRITER), session)
         items = parse_array(resp["content"])
         print(f"{w}: {len(items)} 题，cached={resp['cached']}，{resp['usage']}")
         rows += [{"writer": w, "rank": i, "question": x["question"].strip(), "scenario": x.get("scenario", "")} for i, x in enumerate(items)]

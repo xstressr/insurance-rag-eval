@@ -39,3 +39,16 @@ blind_v1 和 v2 都由 AI 写题，而写题的 AI 见过条款和系统的失�
 - 模型写的题通常比真实用户的问题更规整。这些模型也可能在训练时见过这几款公开产品的介绍。
 - 标注仍由 Claude 完成，Claude 见过条款；blind_v2 的 c06 就出现过标注遗漏。
 - 20 题的样本，相差 1～2 题在噪声范围内。
+
+## 执行记录（生成与筛选之后补记）
+
+- **接口偏离。** `muse-spark-1.3-contributor` 在 OpenCode 上不支持 chat/completions 接口，报错 `ModelProtocolUnsupported`，于是改用 Responses 接口调用（`gen_questions.chat_responses`）。
+  - 调用时没有传 temperature，用的是服务端默认值 1，与本协议写的 temperature 0 不一致。
+  - 这一轮输出已写入缓存，可以复现。
+  - 出题提示词和筛选规则都没有改。
+- **筛选结果。** 45 道候选题全部通过格式检查。丢掉 2 道：
+  - muse 1 道，与已有题目相似度 0.902；
+  - qwen 1 道，与另一道候选重复。
+
+  按配额抽中 20 题：kimi 7、qwen 7、muse 6。
+- **规则的漏网。** d03（有乙肝小三阳能不能买康宁尊享）与 blind_v2 的 c14 问的是同一件事，只是相似度低于阈值（见 `blind_v3_candidates.jsonl` 的 `max_sim_existing`），所以按规则保留，没有人工剔除。报告里单独注明。
