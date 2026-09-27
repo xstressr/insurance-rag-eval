@@ -222,7 +222,7 @@ def write_report(results: list[dict], args: argparse.Namespace, n_chunks: int) -
         f"| 文本块数 | {n_chunks} |",
         f"| k | {k} |",
         "",
-        "## 总体指标（有证据的 29 题）",
+        f"## 总体指标（有证据的 {len(answerable)} 题）",
         "",
         f"| Hit@{k} | Recall@{k} | MRR@10 | 前 {k} 名中阅读指引占比 |",
         "|---|---|---|---|",
@@ -238,6 +238,8 @@ def write_report(results: list[dict], args: argparse.Namespace, n_chunks: int) -
     for r in answerable:
         by_type[r["type"]].append(r)
     for t in ["exact", "number", "condition", "compare"]:
+        if not by_type[t]:  # 有的评测集没有某类题（blind_v3 没有数字题）
+            continue
         s = summarize(by_type[t])
         lines.append(f"| {TYPE_NAME[t]} | {s['n']} | {s['hit']:.1%} | {s['recall']:.1%} | {s['mrr']:.3f} |")
 

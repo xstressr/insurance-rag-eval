@@ -4,7 +4,7 @@
 #   sh scripts/reproduce.sh offline   不要数据、不要 key：跑单元测试，用仓库里的运行结果重算运行指标
 #   sh scripts/reproduce.sh data      下载并校验公开 PDF → 切分（校验 chunks 哈希）→ BM25 检索评测
 #   sh scripts/reproduce.sh dense     计算 bge-m3 向量（需要 embed 镜像，首次下载约 2.3GB 模型）→ 向量检索评测
-#   sh scripts/reproduce.sh llm       需要 .env 里的 key 和 embed-server：在 blind_v2 和 v2.1 上跑单次 RAG、Agent、评委
+#   sh scripts/reproduce.sh llm       需要 .env 里的 key 和 embed-server：在 blind_v2、v2.1、v3 上跑单次 RAG、Agent、评委
 #
 # 评测脚本把结果写回 reports/ 下原来的文件名；在宿主机上用 git diff reports/ 看和提交的结果有没有差别。
 set -eu
@@ -34,12 +34,14 @@ dense)
   $PY src/embed.py --golden golden_v2.jsonl --name bge-m3_index_text
   $PY src/embed.py --golden golden_blind_v1.jsonl --name bge-m3_index_text_blind
   $PY src/embed.py --golden golden_blind_v2.jsonl --name bge-m3_index_text_blind2
+  $PY src/embed.py --golden golden_blind_v3.jsonl --name bge-m3_index_text_blind3
   ;;
 dense-eval)
   $PY src/evaluate.py --run-name dense_v2_golden_v2 --golden golden_v2.jsonl $DENSE
   $PY src/evaluate.py --run-name blind_v1_dense --golden golden_blind_v1.jsonl --emb bge-m3_index_text_blind $DENSE
   $PY src/evaluate.py --run-name blind_v2_dense --golden golden_blind_v2.jsonl --emb bge-m3_index_text_blind2 $DENSE
   $PY src/evaluate.py --run-name blind_v2_1_dense --golden golden_blind_v2.1.jsonl --emb bge-m3_index_text_blind2 $DENSE
+  $PY src/evaluate.py --run-name blind_v3_dense --golden golden_blind_v3.jsonl --emb bge-m3_index_text_blind3 $DENSE
   ;;
 llm)
   # 约 16×1 + 16×4 次生成调用、32 次评委调用。结果有缓存（data/processed/llm_cache），重跑不再计费。
@@ -52,6 +54,11 @@ llm)
   $PY src/agent_graph.py --run-name agent_v3_guard_blind2_1 --golden golden_blind_v2.1.jsonl --agent-prompt a2 --guard 1
   $PY src/judge.py --run gen_v3_p2_blind2_1 --golden golden_blind_v2.1.jsonl
   $PY src/judge.py --run agent_v3_guard_blind2_1 --golden golden_blind_v2.1.jsonl
+  # blind_v3：约 20 + 20×4 次生成调用、40 次评委调用
+  $PY src/answer.py --run-name gen_v3_p2_blind3 --golden golden_blind_v3.jsonl --emb bge-m3_index_text_blind3
+  $PY src/agent_graph.py --run-name agent_v3_guard_blind3 --golden golden_blind_v3.jsonl --agent-prompt a2 --guard 1
+  $PY src/judge.py --run gen_v3_p2_blind3 --golden golden_blind_v3.jsonl
+  $PY src/judge.py --run agent_v3_guard_blind3 --golden golden_blind_v3.jsonl
   $PY src/ops_report.py --name ops_v1 >/dev/null
   ;;
 *)
